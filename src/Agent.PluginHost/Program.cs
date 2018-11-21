@@ -3,10 +3,12 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using Agent.Sdk;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
 using Microsoft.VisualStudio.Services.Agent.Util;
@@ -110,53 +112,112 @@ namespace Agent.PluginHost
 
                     return 0;
                 }
-                else if (string.Equals("logging", pluginType, StringComparison.OrdinalIgnoreCase))
+                else if (string.Equals("daemon", pluginType, StringComparison.OrdinalIgnoreCase))
                 {
                     ArgUtil.NotNull(args, nameof(args));
 
-                    List<string> loggingPlugins = new List<string>();
-                    for (int index = 1; index < args.Length; index++)
-                    {
-                        string assemblyQualifiedName = args[index];
-                        ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
-                        loggingPlugins.Add(assemblyQualifiedName);
-                    }
+                    // read through commandline arg to get the instance id
+                    var instanceId = args.Skip(1).FirstOrDefault();
+                    ArgUtil.NotNullOrEmpty(instanceId, nameof(instanceId));
 
+                    // read STDIN, the first line will be the HostContext for the daemon process
                     string serializedContext = Console.ReadLine();
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
+                    AgentPluginDaemonHostContext hostContext = StringUtil.ConvertFromJson<AgentPluginDaemonHostContext>(serializedContext);
+                    ArgUtil.NotNull(hostContext, nameof(hostContext));
 
-                    AgentLoggingPluginExecutionContext executionContext = StringUtil.ConvertFromJson<AgentLoggingPluginExecutionContext>(serializedContext);
-                    ArgUtil.NotNull(executionContext, nameof(executionContext));
-
-                    if (loggingPlugins.Count == 0)
+                    // read through commandline arg to get all plugin assembly name                    
+                    List<IAgentDaemonPlugin> daemonPlugins = new List<IAgentDaemonPlugin>();
+                    AssemblyLoadContext.Default.Resolving += ResolveAssembly;
+                    try
                     {
-                        return 0;
-                    }
-                    else
-                    {
-                        AssemblyLoadContext.Default.Resolving += ResolveAssembly;
-                        try
+                        HashSet<string> plugins = new HashSet<string>();
+                        for (int index = 2; index < args.Length; index++)
                         {
-                            foreach (var plugin in loggingPlugins)
+                            try
                             {
-                                Type type = Type.GetType(plugin, throwOnError: true);
-                                var loggingPlugin = Activator.CreateInstance(type) as IAgentLoggingPlugin;
-                                ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
-                                executionContext.Plugins.Add(loggingPlugin);
+                                string assemblyQualifiedName = args[index];
+                                ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
+                                if (plugins.Add(assemblyQualifiedName))
+                                {
+                                    Type type = Type.GetType(assemblyQualifiedName, throwOnError: true);
+                                    var loggingPlugin = Activator.CreateInstance(type) as IAgentDaemonPlugin;
+                                    ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
+                                    daemonPlugins.Add(loggingPlugin);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                // any exception throw from plugin will get trace and ignore, error from daemon will not fail the job.
+                                // hostContext.Error(ex.ToString());
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            // any exception throw from plugin will fail the command.
-                            executionContext.Error(ex.ToString());
-                        }
-                        finally
-                        {
-                            AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
-                        }
-
-                        return executionContext.Run().GetAwaiter().GetResult();
                     }
+                    finally
+                    {
+                        AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
+                    }
+
+                    // start the daemon process
+                    var daemon = new AgentDaemonPluginHost(hostContext, daemonPlugins);
+                    Task daemonTask = daemon.Run();
+                    while (true)
+                    {
+                        var consoleInput = Console.ReadLine();
+                        if (string.Equals(consoleInput, $"##vso[daemon.finish]{instanceId}", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // singal all plugins, the job has finished.
+                            // plugin need to start their finalize process.
+                            daemon.Finish();
+                            break;
+                        }
+                        else if (string.Equals(consoleInput, $"##vso[daemon.cancel]{instanceId}", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // singal all plugins, the job has cancelled
+                            // plugin need to stop running, otherwise we will kill it.
+                            daemon.Cancel();
+                            break;
+                        }
+                        else
+                        {
+                            JobOutput output = StringUtil.ConvertFromJson<JobOutput>(consoleInput);
+                            daemon.EnqueueConsoleOutput(output);
+                        }
+                    }
+
+                    // wait for the daemon to finish.
+                    daemonTask.GetAwaiter().GetResult();
+
+                    return 0;
+                    // if (loggingPlugins.Count == 0)
+                    // {
+                    //     return 0;
+                    // }
+                    // else
+                    // {
+                    //     AssemblyLoadContext.Default.Resolving += ResolveAssembly;
+                    //     try
+                    //     {
+                    //         foreach (var plugin in loggingPlugins)
+                    //         {
+                    //             Type type = Type.GetType(plugin, throwOnError: true);
+                    //             var loggingPlugin = Activator.CreateInstance(type) as IAgentLoggingPlugin;
+                    //             ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
+                    //             executionContext.Plugins.Add(loggingPlugin);
+                    //         }
+                    //     }
+                    //     catch (Exception ex)
+                    //     {
+                    //         // any exception throw from plugin will fail the command.
+                    //         executionContext.Error(ex.ToString());
+                    //     }
+                    //     finally
+                    //     {
+                    //         AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
+                    //     }
+
+                    //     return executionContext.Run(loggingPlugins).GetAwaiter().GetResult();
+                    // }
                 }
                 else
                 {

@@ -5,6 +5,8 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
+using System.Runtime.Loader;
+using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
@@ -16,35 +18,63 @@ using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Agent.Sdk
 {
-    public interface IAgentLoggingPlugin
+    [DataContract]
+    public class JobOutput
     {
-        Guid Id { get; }
-        string Version { get; }
-        string Stage { get; }
-        Task RunAsync(AgentLoggingPluginExecutionContext executionContext, CancellationToken token);
+        [DataMember]
+        public Guid StepId { get; set; }
+
+        [DataMember]
+        public string Output { get; set; }
     }
 
-    public class AgentLoggingPluginExecutionContext : ITraceWriter
+    public interface IDaemonPluginContext
+    {
+        // task info for all steps
+        IList<Pipelines.TaskStepDefinitionReference> Steps { get; }
+
+        // all endpoints
+        IList<ServiceEndpoint> Endpoints { get; }
+
+        // all repositories
+        IList<Pipelines.RepositoryResource> Repositories { get; }
+
+        // all variables
+        IDictionary<string, VariableValue> Variables { get; }
+
+        // default SystemConnection back to service use the job oauth token
+        VssConnection VssConnection { get; }
+
+        // agent log
+        void Trace(string message);
+
+        // user log (job log)
+        void Output(string message);
+
+        // user log (job log)
+        void Warning(string message);
+
+        // task info for current step
+        Pipelines.TaskStepDefinitionReference GetCurrentStep(JobOutput output);
+    }
+
+    public interface IAgentDaemonPlugin
+    {
+        string Name { get; }
+
+        Task ProcessAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token);
+
+        Task FinalizeAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token);
+    }
+
+    public class AgentPluginDaemonHostContext
     {
         private VssConnection _connection;
-        private readonly object _stdoutLock = new object();
-
-        public AgentLoggingPluginExecutionContext()
-        {
-            this.Endpoints = new List<ServiceEndpoint>();
-            this.Steps = new Dictionary<Guid, Pipelines.TaskStepDefinitionReference>();
-            this.Repositories = new List<Pipelines.RepositoryResource>();
-            this.TaskVariables = new Dictionary<string, VariableValue>(StringComparer.OrdinalIgnoreCase);
-            this.Variables = new Dictionary<string, VariableValue>(StringComparer.OrdinalIgnoreCase);
-            this.Plugins = new List<IAgentLoggingPlugin>();
-        }
 
         public List<ServiceEndpoint> Endpoints { get; set; }
         public List<Pipelines.RepositoryResource> Repositories { get; set; }
         public Dictionary<string, VariableValue> Variables { get; set; }
-        public Dictionary<string, VariableValue> TaskVariables { get; set; }
         public Dictionary<Guid, Pipelines.TaskStepDefinitionReference> Steps { get; set; }
-
 
         [JsonIgnore]
         public VssConnection VssConnection
@@ -59,22 +89,12 @@ namespace Agent.Sdk
             }
         }
 
-        [JsonIgnore]
-        public IList<IAgentLoggingPlugin> Plugins { get; set; }
-
-        public async Task<Int32> Run()
+        public IDaemonPluginContext CreatePluginContext(IAgentDaemonPlugin plugin)
         {
-            ConcurrentQueue<string> inputQueue = new ConcurrentQueue<string>();
-            while (true)
-            {
-                string input = Console.ReadLine();
-                inputQueue.Enqueue(input);
-            }
-
-            return 0;
+            return null;
         }
 
-        public VssConnection InitializeVssConnection()
+        private VssConnection InitializeVssConnection()
         {
             var headerValues = new List<ProductInfoHeaderValue>();
             headerValues.Add(new ProductInfoHeaderValue($"VstsAgentCore-Plugin", Variables.GetValueOrDefault("agent.version")?.Value ?? "Unknown"));
@@ -119,103 +139,7 @@ namespace Agent.Sdk
             return VssUtil.CreateConnection(systemConnection.Url, credentials);
         }
 
-        public string GetInput(string name, bool required = false)
-        {
-            string value = null;
-            if (this.Inputs.ContainsKey(name))
-            {
-                value = this.Inputs[name];
-            }
-
-            if (string.IsNullOrEmpty(value) && required)
-            {
-                throw new ArgumentNullException(name);
-            }
-
-            return value;
-        }
-
-        public void Info(string message)
-        {
-            Debug(message);
-        }
-
-        public void Verbose(string message)
-        {
-#if DEBUG
-            Debug(message);
-#else
-            string vstsAgentTrace = Environment.GetEnvironmentVariable("VSTSAGENT_TRACE");
-            if (!string.IsNullOrEmpty(vstsAgentTrace))
-            {
-                Debug(message);
-            }
-#endif
-        }
-
-        public void Error(string message)
-        {
-            Output($"##vso[task.logissue type=error;]{Escape(message)}");
-            Output($"##vso[task.complete result=Failed;]");
-        }
-
-        public void Debug(string message)
-        {
-            Output($"##vso[task.debug]{Escape(message)}");
-        }
-
-        public void Warning(string message)
-        {
-            Output($"##vso[task.logissue type=warning;]{Escape(message)}");
-        }
-
-        public void Output(string message)
-        {
-            lock (_stdoutLock)
-            {
-                Console.WriteLine(message);
-            }
-        }
-
-        public void PrependPath(string directory)
-        {
-            PathUtil.PrependPath(directory);
-            Output($"##vso[task.prependpath]{Escape(directory)}");
-        }
-
-        public void Progress(int progress, string operation)
-        {
-            if (progress < 0 || progress > 100)
-            {
-                throw new ArgumentOutOfRangeException(nameof(progress));
-            }
-
-            Output($"##vso[task.setprogress value={progress}]{Escape(operation)}");
-        }
-
-        public void SetSecret(string secret)
-        {
-            Output($"##vso[task.setsecret]{Escape(secret)}");
-        }
-
-        public void SetVariable(string variable, string value, bool isSecret = false)
-        {
-            this.Variables[variable] = new VariableValue(value, isSecret);
-            Output($"##vso[task.setvariable variable={Escape(variable)};issecret={isSecret.ToString()};]{Escape(value)}");
-        }
-
-        public void SetTaskVariable(string variable, string value, bool isSecret = false)
-        {
-            this.TaskVariables[variable] = new VariableValue(value, isSecret);
-            Output($"##vso[task.settaskvariable variable={Escape(variable)};issecret={isSecret.ToString()};]{Escape(value)}");
-        }
-
-        public void Command(string command)
-        {
-            Output($"##[command]{Escape(command)}");
-        }
-
-        public AgentCertificateSettings GetCertConfiguration()
+        private AgentCertificateSettings GetCertConfiguration()
         {
             bool skipCertValidation = StringUtil.ConvertToBoolean(this.Variables.GetValueOrDefault("Agent.SkipCertValidation")?.Value);
             string caFile = this.Variables.GetValueOrDefault("Agent.CAInfo")?.Value;
@@ -249,7 +173,7 @@ namespace Agent.Sdk
             }
         }
 
-        public AgentWebProxySettings GetProxyConfiguration()
+        private AgentWebProxySettings GetProxyConfiguration()
         {
             string proxyUrl = this.Variables.GetValueOrDefault("Agent.ProxyUrl")?.Value;
             if (!string.IsNullOrEmpty(proxyUrl))
@@ -271,31 +195,138 @@ namespace Agent.Sdk
                 return null;
             }
         }
+    }
 
-        private string Escape(string input)
+
+    public class AgentDaemonPluginHost
+    {
+        private readonly TaskCompletionSource<int> _jobFinished = new TaskCompletionSource<int>();
+        private readonly TaskCompletionSource<int> _jobCancelled = new TaskCompletionSource<int>();
+        private Dictionary<string, int> _processTimer = new Dictionary<string, int>();
+        private readonly Dictionary<string, ConcurrentQueue<JobOutput>> _outputQueue = new Dictionary<string, ConcurrentQueue<JobOutput>>();
+        private List<IAgentDaemonPlugin> _plugins;
+        private AgentPluginDaemonHostContext _hostContext;
+
+        public AgentDaemonPluginHost(AgentPluginDaemonHostContext hostContext, List<IAgentDaemonPlugin> plugins)
         {
-            foreach (var mapping in _commandEscapeMappings)
+            _hostContext = hostContext;
+            _plugins = plugins;
+            foreach (var plugin in _plugins)
             {
-                input = input.Replace(mapping.Key, mapping.Value);
+                string typeName = plugin.GetType().FullName;
+                _outputQueue[typeName] = new ConcurrentQueue<JobOutput>();
+                _processTimer[typeName] = 5000;
             }
-
-            return input;
         }
 
-        private Dictionary<string, string> _commandEscapeMappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        public async Task<Int32> Run()
         {
+            CancellationTokenSource tokenSource = new CancellationTokenSource();
+            List<Task> processTasks = new List<Task>();
+            foreach (var plugin in _plugins)
             {
-                ";", "%3B"
-            },
+                // start process plugins backgroud
+                processTasks.Add(Run(plugin, tokenSource.Token));
+            }
+
+            // waiting for job cancel or job finish
+            var completedTask = await Task.WhenAny(_jobCancelled.Task, _jobFinished.Task);
+
+            // stop current process tasks
+            tokenSource.Cancel();
+            await Task.WhenAll(processTasks);
+
+            if (completedTask == _jobFinished.Task)
             {
-                "\r", "%0D"
-            },
+                // job has finished, all daemon plugins should start their finalize process
+                List<Task> finalizeTasks = new List<Task>();
+                foreach (var plugin in _plugins)
+                {
+                    finalizeTasks.Add(FinalizeAsync(plugin));
+                }
+
+                await Task.WhenAll(finalizeTasks);
+            }
+            else
             {
-                "\n", "%0A"
-            },
+                // job cancelled
+            }
+
+            return 0;
+        }
+
+        public void EnqueueConsoleOutput(JobOutput output)
+        {
+            if (!string.IsNullOrEmpty(output?.Output))
             {
-                "]", "%5D"
-            },
-        };
+                foreach (var plugin in _plugins)
+                {
+                    string typeName = plugin.GetType().FullName;
+                    _outputQueue[typeName].Enqueue(output);
+
+                    var queueDepth = _outputQueue[typeName].Count();
+                    if (queueDepth > 5000)
+                    {
+                        _processTimer[typeName] = 1000;
+                    }
+                }
+            }
+        }
+
+        public void Finish()
+        {
+            _jobFinished.TrySetResult(0);
+        }
+
+        public void Cancel()
+        {
+            _jobCancelled.TrySetResult(0);
+        }
+
+        private async Task Run(IAgentDaemonPlugin plugin, CancellationToken token)
+        {
+            string typeName = plugin.GetType().FullName;
+            var pluginContext = _hostContext.CreatePluginContext(plugin);
+            while (!token.IsCancellationRequested)
+            {
+                // process at most 1000 lines everytime.
+                List<JobOutput> batch = new List<JobOutput>();
+                while (_outputQueue[typeName].TryDequeue(out JobOutput output))
+                {
+                    batch.Add(output);
+                    if (batch.Count >= 1000)
+                    {
+                        break;
+                    }
+                }
+
+                try
+                {
+                    if (batch.Count > 0)
+                    {
+                        await plugin.ProcessAsync(pluginContext, batch, token);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // trace and ignore exception
+                }
+
+                // bump the sleep time back when we get less output again
+                if (batch.Count < 1000 && _processTimer[typeName] < 5000)
+                {
+                    _processTimer[typeName] = 5000;
+                }
+
+                try
+                {
+                    await Task.Delay(_processTimer[typeName], token);
+                }
+                catch (Exception ex)
+                {
+                    // trace and ignore exception
+                }
+            }
+        }
     }
 }
