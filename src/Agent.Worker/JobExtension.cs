@@ -13,6 +13,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
     {
         HostTypes HostType { get; }
         Task<JobInitializeResult> InitializeJob(IExecutionContext jobContext, Pipelines.AgentJobRequestMessage message);
+        Task FinalizeJob(IExecutionContext jobContext);
         string GetRootedPath(IExecutionContext context, string path);
         void ConvertLocalPath(IExecutionContext context, string localPath, out string repoName, out string sourcePath);
     }
@@ -277,6 +278,15 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                         initResult.PostJobStep.Add(finallyStep);
                     }
 #endif
+                    // Start agent plugin daemon process
+                    List<IStep> jobSteps = new List<IStep>();
+                    jobSteps.AddRange(initResult.PreJobSteps);
+                    jobSteps.AddRange(initResult.JobSteps);
+                    jobSteps.AddRange(initResult.PostJobStep);
+
+                    var pluginDaemon = HostContext.GetService<IAgentPluginDaemon>();
+                    await pluginDaemon.StartPluginDaemon(context, jobSteps);
+
                     return initResult;
                 }
                 catch (OperationCanceledException ex) when (jobContext.CancellationToken.IsCancellationRequested)
@@ -298,6 +308,39 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 finally
                 {
                     context.Section(StringUtil.Loc("StepFinishing", StringUtil.Loc("InitializeJob")));
+                    context.Complete();
+                }
+            }
+        }
+
+        public async Task FinalizeJob(IExecutionContext jobContext)
+        {
+            Trace.Entering();
+            ArgUtil.NotNull(jobContext, nameof(jobContext));
+
+            // create a new timeline record node for 'Finalize job'
+            IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("FinalizeJob"), nameof(JobExtension));
+
+            using (var register = jobContext.CancellationToken.Register(() => { context.CancelToken(); }))
+            {
+                try
+                {
+                    context.Start();
+                    context.Section(StringUtil.Loc("StepStarting", StringUtil.Loc("FinalizeJob")));
+
+                    // Stop agent plugin daemon process
+                    var pluginDaemon = HostContext.GetService<IAgentPluginDaemon>();
+                    await pluginDaemon.StopPluginDaemon(context);
+                }
+                catch (Exception ex)
+                {
+                    // Log and ignore the error from JobExtension finalization.
+                    Trace.Error($"Caught exception from JobExtension finalization: {ex}");
+                    context.Output(ex.Message);
+                }
+                finally
+                {
+                    context.Section(StringUtil.Loc("StepFinishing", StringUtil.Loc("FinalizeJob")));
                     context.Complete();
                 }
             }

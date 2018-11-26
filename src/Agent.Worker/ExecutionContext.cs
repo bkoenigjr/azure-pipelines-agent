@@ -73,6 +73,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly List<IAsyncCommandContext> _asyncCommands = new List<IAsyncCommandContext>();
         private readonly HashSet<string> _outputvariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+        private IAgentPluginDaemon _daemon;
         private IPagingLogger _logger;
         private IJobServerQueue _jobServerQueue;
         private IExecutionContext _parentExecutionContext;
@@ -529,6 +530,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 {
                     parentContext._logger.Write(msg);
                 }
+            }
+
+            // write to plugin daemon, 
+            if (_daemon != null)
+            {
+                _daemon.Write(_record.Id, msg);
             }
 
             _jobServerQueue.QueueWebConsoleLine(_record.Id, msg);

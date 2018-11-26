@@ -117,6 +117,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: false,
                 contentsToStandardIn: null,
+                standardInStream: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -139,6 +140,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: killProcessOnCancel,
                 contentsToStandardIn: null,
+                standardInStream: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -151,6 +153,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
+            Stream standardInStream,
             CancellationToken cancellationToken)
         {
             ArgUtil.Null(_proc, nameof(_proc));
@@ -164,6 +167,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Trace.Info($"  Encoding web name: {outputEncoding?.WebName} ; code page: '{outputEncoding?.CodePage}'");
             Trace.Info($"  Force kill process on cancellation: '{killProcessOnCancel}'");
             Trace.Info($"  Lines to send through STDIN: '{contentsToStandardIn?.Count ?? 0}'");
+            Trace.Info($"  Redirected STDIN: '{standardInStream != null}'");
 
             _proc = new Process();
             _proc.StartInfo.FileName = fileName;
@@ -235,20 +239,29 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
 
             if (_proc.StartInfo.RedirectStandardInput)
             {
-                // Write contents to STDIN
-                if (contentsToStandardIn?.Count > 0)
-                {
-                    foreach (var content in contentsToStandardIn)
-                    {
-                        // Write the contents as UTF8 to handle all characters.
-                        var utf8Writer = new StreamWriter(_proc.StandardInput.BaseStream, new UTF8Encoding(false));
-                        utf8Writer.WriteLine(content);
-                        utf8Writer.Flush();
-                    }
-                }
+                // Write the contents as UTF8 to handle all characters.
+                var utf8Writer = new StreamWriter(_proc.StandardInput.BaseStream, new UTF8Encoding(false));
 
-                // Close the input stream. This is done to prevent commands from blocking the build waiting for input from the user.
-                _proc.StandardInput.Close();
+                if (standardInStream != null)
+                {
+                    StartWriteStream(standardInStream, utf8Writer);
+                }
+                else
+                {
+                    // Write contents to STDIN
+                    if (contentsToStandardIn?.Count > 0)
+                    {
+                        foreach (var content in contentsToStandardIn)
+                        {
+
+                            utf8Writer.WriteLine(content);
+                            utf8Writer.Flush();
+                        }
+                    }
+
+                    // Close the input stream. This is done to prevent commands from blocking the build waiting for input from the user.
+                    _proc.StandardInput.Close();
+                }
             }
 
             using (var registration = cancellationToken.Register(async () => await CancelAndKillProcessTree(killProcessOnCancel)))
@@ -433,6 +446,24 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 {
                     _processExitedCompletionSource.TrySetResult(true);
                 }
+            });
+        }
+
+        private void StartWriteStream(Stream reader, StreamWriter writer)
+        {
+            StreamReader utfReader = new StreamReader(reader, Encoding.UTF8);
+            Task.Run(() =>
+            {
+                while (!utfReader.EndOfStream)
+                {
+                    string line = utfReader.ReadLine();
+                    if (line != null)
+                    {
+                        writer.WriteLine(line);
+                    }
+                }
+
+                Trace.Info("STDIN stream write finished.");
             });
         }
 

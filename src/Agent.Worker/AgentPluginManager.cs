@@ -14,6 +14,121 @@ using System.Text;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
+    [ServiceLocator(Default = typeof(AgentPluginDaemon))]
+    public interface IAgentPluginDaemon : IAgentService
+    {
+        Task StartPluginDaemon(IExecutionContext context, List<IStep> steps);
+        Task StopPluginDaemon(IExecutionContext context);
+        void Write(Guid stepId, string message);
+    }
+
+    public sealed class AgentPluginDaemon : AgentService, IAgentPluginDaemon
+    {
+        private readonly Guid _instanceId = Guid.NewGuid();
+
+        private readonly HashSet<string> _daemonPlugins = new HashSet<string>()
+        {
+            "Agent.Plugins.Logging.LoggingPlugin, Agent.Plugins",
+            //"Agent.Plugins.Telemetry.SoftwareUsagePlugin, Agent.Plugins",
+        };
+
+        public override void Initialize(IHostContext hostContext)
+        {
+
+        }
+
+        public async Task StartPluginDaemon(IExecutionContext context, List<IStep> steps)
+        {
+            // Resolve the working directory.
+            string workingDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
+            ArgUtil.Directory(workingDirectory, nameof(workingDirectory));
+
+            // Agent.PluginHost
+            string file = Path.Combine(HostContext.GetDirectory(WellKnownDirectory.Bin), $"Agent.PluginHost{Util.IOUtil.ExeExtension}");
+            ArgUtil.File(file, $"Agent.PluginHost{Util.IOUtil.ExeExtension}");
+
+            // Agent.PluginHost's arguments
+            string arguments = $"daemon \"{_instanceId.ToString("D")}\"";
+            foreach (var plugin in _daemonPlugins)
+            {
+                arguments = $"{arguments} \"{plugin}\"";
+            }
+
+            MemoryStream redirectStdin = new MemoryStream();
+            StreamWriter stdinWriter = new StreamWriter(redire)
+            var processInvoker = HostContext.CreateService<IProcessInvoker>();
+            processInvoker.OutputDataReceived += outputHandler;
+            processInvoker.ErrorDataReceived += outputHandler;
+
+            // Execute the process. Exit code 0 should always be returned.
+            // A non-zero exit code indicates infrastructural failure.
+            // Task failure should be communicated over STDOUT using ## commands.
+            await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
+                                              fileName: file,
+                                              arguments: arguments,
+                                              environment: null,
+                                              requireExitCodeZero: true,
+                                              outputEncoding: Encoding.UTF8,
+                                              killProcessOnCancel: false,
+                                              cancellationToken: context.CancellationToken);
+
+            // construct plugin context
+            AgentTaskPluginExecutionContext pluginContext = new AgentTaskPluginExecutionContext
+            {
+                Inputs = inputs,
+                Repositories = context.Repositories,
+                Endpoints = context.Endpoints
+            };
+            // variables
+            foreach (var publicVar in runtimeVariables.Public)
+            {
+                pluginContext.Variables[publicVar.Key] = publicVar.Value;
+            }
+            foreach (var publicVar in runtimeVariables.Private)
+            {
+                pluginContext.Variables[publicVar.Key] = new VariableValue(publicVar.Value, true);
+            }
+            // task variables (used by wrapper task)
+            foreach (var publicVar in context.TaskVariables.Public)
+            {
+                pluginContext.TaskVariables[publicVar.Key] = publicVar.Value;
+            }
+            foreach (var publicVar in context.TaskVariables.Private)
+            {
+                pluginContext.TaskVariables[publicVar.Key] = new VariableValue(publicVar.Value, true);
+            }
+
+            using (var processInvoker = HostContext.CreateService<IProcessInvoker>())
+            {
+                processInvoker.OutputDataReceived += outputHandler;
+                processInvoker.ErrorDataReceived += outputHandler;
+
+                // Execute the process. Exit code 0 should always be returned.
+                // A non-zero exit code indicates infrastructural failure.
+                // Task failure should be communicated over STDOUT using ## commands.
+                await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
+                                                  fileName: file,
+                                                  arguments: arguments,
+                                                  environment: environment,
+                                                  requireExitCodeZero: true,
+                                                  outputEncoding: Encoding.UTF8,
+                                                  killProcessOnCancel: false,
+                                                  contentsToStandardIn: new List<string>() { JsonUtility.ToString(pluginContext) },
+                                                  cancellationToken: context.CancellationToken);
+            }
+        }
+
+        public Task StopPluginDaemon(IExecutionContext context)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void Write(Guid stepId, string message)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
     [ServiceLocator(Default = typeof(AgentPluginManager))]
     public interface IAgentPluginManager : IAgentService
     {

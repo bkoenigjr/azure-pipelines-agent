@@ -297,6 +297,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
                 finally
                 {
+                    Trace.Info("Finalize job.");
+                    await jobExtension.FinalizeJob(jobContext);
+
                     if (processCleanup)
                     {
                         // Only check environment variable for any process that doesn't run before we invoke our process.
