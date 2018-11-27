@@ -29,9 +29,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly Guid _instanceId = Guid.NewGuid();
 
         private Task<int> _daemonProcess = null;
-        private readonly MemoryStream _redirectedStdin = new MemoryStream();
-        private StreamWriter _stdinWriter;
-        private StreamReader _stdinReader;
+        private readonly ConcurrentQueue<string> _redirectedStdin = new ConcurrentQueue<string>();
 
         private readonly ConcurrentQueue<string> _outputs = new ConcurrentQueue<string>();
 
@@ -40,13 +38,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             "Agent.Plugins.Logging.LoggingPlugin, Agent.Plugins",
             //"Agent.Plugins.Telemetry.SoftwareUsagePlugin, Agent.Plugins",
         };
-
-        public override void Initialize(IHostContext hostContext)
-        {
-            base.Initialize(hostContext);
-            _stdinWriter = new StreamWriter(_redirectedStdin, Encoding.UTF8);
-            _stdinReader = new StreamReader(_redirectedStdin, Encoding.UTF8);
-        }
 
         public Task StartPluginDaemon(IExecutionContext jobContext, List<IStep> steps)
         {
@@ -93,7 +84,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                                                          outputEncoding: Encoding.UTF8,
                                                          killProcessOnCancel: true,
                                                          contentsToStandardIn: null,
-                                                         standardInStream: _stdinReader,
+                                                         standardIn: _redirectedStdin,
                                                          cancellationToken: jobContext.CancellationToken);
 
             // construct plugin context
@@ -129,16 +120,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             Trace.Info(contextJson);
 
             // send context through STDIN
-            _stdinWriter.WriteLine(contextJson);
+            _redirectedStdin.Enqueue(contextJson);
 
             return Task.CompletedTask;
         }
 
         public async Task StopPluginDaemon(IExecutionContext context)
         {
+            Trace.Entering();
             // send instruction code to plugin daemon.
             // daemon will stop the routine process and give every plugin a chance to participate into job finalization 
-            _stdinWriter.WriteLine($"##vso[daemon.finish]{_instanceId.ToString("D")}");
+            _redirectedStdin.Enqueue($"##vso[daemon.finish]{_instanceId.ToString("D")}");
 
             // print out outputs from plugin daemon and wait for plugin finish
             while (!_daemonProcess.IsCompleted)
@@ -151,6 +143,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 await Task.WhenAny(Task.Delay(100), _daemonProcess);
             }
 
+            while (_outputs.TryDequeue(out string output))
+            {
+                context.Output(output);
+            }
+
             await _daemonProcess;
         }
 
@@ -158,7 +155,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         {
             if (!string.IsNullOrEmpty(message))
             {
-                _stdinWriter.WriteLine(StringUtil.ConvertToJson(new JobOutput() { Id = stepId, Out = message }));
+                _redirectedStdin.Enqueue(JsonUtility.ToString(new JobOutput() { Id = stepId, Out = message }));
             }
         }
     }

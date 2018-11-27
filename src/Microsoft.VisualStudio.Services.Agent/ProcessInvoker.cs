@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 
 namespace Microsoft.VisualStudio.Services.Agent
 {
@@ -68,7 +69,7 @@ namespace Microsoft.VisualStudio.Services.Agent
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
-            StreamReader standardInStream,
+            ConcurrentQueue<string> standardIn,
             CancellationToken cancellationToken);
     }
 
@@ -190,7 +191,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: killProcessOnCancel,
                 contentsToStandardIn: contentsToStandardIn,
-                standardInStream: null,
+                standardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -203,7 +204,7 @@ namespace Microsoft.VisualStudio.Services.Agent
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
-            StreamReader standardInStream,
+            ConcurrentQueue<string> standardIn,
             CancellationToken cancellationToken)
         {
             _invoker.ErrorDataReceived += this.ErrorDataReceived;
@@ -217,7 +218,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 outputEncoding,
                 killProcessOnCancel,
                 contentsToStandardIn,
-                standardInStream,
+                standardIn,
                 cancellationToken);
         }
 

@@ -123,12 +123,11 @@ namespace Agent.PluginHost
                     ArgUtil.NotNullOrEmpty(instanceId, nameof(instanceId));
 
                     File.AppendAllText(logFile, instanceId);
-                    File.AppendAllLines(logFile, Array.Empty<string>());
+
 
                     // read STDIN, the first line will be the HostContext for the daemon process
                     string serializedContext = Console.ReadLine();
                     File.AppendAllText(logFile, serializedContext);
-                    File.AppendAllLines(logFile, Array.Empty<string>());
 
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
                     AgentPluginDaemonContext daemonContext = StringUtil.ConvertFromJson<AgentPluginDaemonContext>(serializedContext);
@@ -172,6 +171,8 @@ namespace Agent.PluginHost
                     while (true)
                     {
                         var consoleInput = Console.ReadLine();
+                        File.AppendAllText(logFile, consoleInput);
+
                         if (string.Equals(consoleInput, $"##vso[daemon.finish]{instanceId}", StringComparison.OrdinalIgnoreCase))
                         {
                             // singal all plugins, the job has finished.

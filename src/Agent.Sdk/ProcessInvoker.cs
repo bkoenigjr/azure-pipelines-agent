@@ -117,7 +117,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: false,
                 contentsToStandardIn: null,
-                standardInStream: null,
+                standardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -140,7 +140,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: killProcessOnCancel,
                 contentsToStandardIn: null,
-                standardInStream: null,
+                standardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -153,7 +153,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
-            StreamReader standardInStream,
+            ConcurrentQueue<string> standardIn,
             CancellationToken cancellationToken)
         {
             ArgUtil.Null(_proc, nameof(_proc));
@@ -167,7 +167,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Trace.Info($"  Encoding web name: {outputEncoding?.WebName} ; code page: '{outputEncoding?.CodePage}'");
             Trace.Info($"  Force kill process on cancellation: '{killProcessOnCancel}'");
             Trace.Info($"  Lines to send through STDIN: '{contentsToStandardIn?.Count ?? 0}'");
-            Trace.Info($"  Redirected STDIN: '{standardInStream != null}'");
+            Trace.Info($"  Redirected STDIN: '{standardIn != null}'");
 
             _proc = new Process();
             _proc.StartInfo.FileName = fileName;
@@ -242,9 +242,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 // Write the contents as UTF8 to handle all characters.
                 var utf8Writer = new StreamWriter(_proc.StandardInput.BaseStream, new UTF8Encoding(false));
 
-                if (standardInStream != null)
+                if (standardIn != null)
                 {
-                    StartWriteStream(standardInStream, utf8Writer);
+                    StartWriteStream(standardIn, utf8Writer);
                 }
                 else
                 {
@@ -449,16 +449,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             });
         }
 
-        private void StartWriteStream(StreamReader reader, StreamWriter writer)
+        private void StartWriteStream(ConcurrentQueue<string> standardIn, StreamWriter writer)
         {
-            Task.Run(() =>
+            Task.Run(async () =>
             {
-                while (!reader.EndOfStream)
+                while (!_processExitedCompletionSource.Task.IsCompleted)
                 {
-                    string line = reader.ReadLine();
-                    if (line != null)
+                    if (standardIn.TryDequeue(out string line) && !string.IsNullOrEmpty(line))
                     {
+                        Trace.Info(line);
                         writer.WriteLine(line);
+                        writer.Flush();
+                    }
+                    else
+                    {
+                        await Task.Delay(1000);
                     }
                 }
 
