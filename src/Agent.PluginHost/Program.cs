@@ -130,33 +130,33 @@ namespace Agent.PluginHost
                     File.AppendAllText(logFile, serializedContext);
 
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
-                    AgentPluginDaemonContext daemonContext = StringUtil.ConvertFromJson<AgentPluginDaemonContext>(serializedContext);
-                    ArgUtil.NotNull(daemonContext, nameof(daemonContext));
+                    AgentLogPluginHostContext hostContext = StringUtil.ConvertFromJson<AgentLogPluginHostContext>(serializedContext);
+                    ArgUtil.NotNull(hostContext, nameof(hostContext));
 
                     // read through commandline arg to get all plugin assembly name                    
-                    List<IAgentDaemonPlugin> daemonPlugins = new List<IAgentDaemonPlugin>();
+                    List<IAgentLogPlugin> daemonPlugins = new List<IAgentLogPlugin>();
                     AssemblyLoadContext.Default.Resolving += ResolveAssembly;
                     try
                     {
                         HashSet<string> plugins = new HashSet<string>();
                         for (int index = 2; index < args.Length; index++)
                         {
-                            try
+                            string assemblyQualifiedName = args[index];
+                            ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
+                            if (plugins.Add(assemblyQualifiedName))
                             {
-                                string assemblyQualifiedName = args[index];
-                                ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
-                                if (plugins.Add(assemblyQualifiedName))
+                                try
                                 {
                                     Type type = Type.GetType(assemblyQualifiedName, throwOnError: true);
-                                    var loggingPlugin = Activator.CreateInstance(type) as IAgentDaemonPlugin;
+                                    var loggingPlugin = Activator.CreateInstance(type) as IAgentLogPlugin;
                                     ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
                                     daemonPlugins.Add(loggingPlugin);
                                 }
-                            }
-                            catch (Exception ex)
-                            {
-                                // any exception throw from plugin will get trace and ignore, error from daemon will not fail the job.
-                                // hostContext.Error(ex.ToString());
+                                catch (Exception ex)
+                                {
+                                    // any exception throw from plugin will get trace and ignore, error from daemon will not fail the job.
+                                    hostContext.Output($"Unable load plugin '{assemblyQualifiedName}':{ex}");
+                                }
                             }
                         }
                     }
@@ -166,8 +166,8 @@ namespace Agent.PluginHost
                     }
 
                     // start the daemon process
-                    var daemon = new AgentDaemonPluginHost(daemonContext, daemonPlugins);
-                    Task daemonTask = daemon.Run();
+                    var logPluginHost = new AgentLogPluginHost(hostContext, daemonPlugins);
+                    Task hostTask = logPluginHost.Run();
                     while (true)
                     {
                         var consoleInput = Console.ReadLine();
@@ -177,49 +177,20 @@ namespace Agent.PluginHost
                         {
                             // singal all plugins, the job has finished.
                             // plugin need to start their finalize process.
-                            daemon.Finish();
+                            logPluginHost.Finish();
                             break;
                         }
                         else
                         {
                             JobOutput output = StringUtil.ConvertFromJson<JobOutput>(consoleInput);
-                            daemon.EnqueueConsoleOutput(output);
+                            logPluginHost.EnqueueConsoleOutput(output);
                         }
                     }
 
                     // wait for the daemon to finish.
-                    daemonTask.GetAwaiter().GetResult();
+                    hostTask.GetAwaiter().GetResult();
 
                     return 0;
-                    // if (loggingPlugins.Count == 0)
-                    // {
-                    //     return 0;
-                    // }
-                    // else
-                    // {
-                    //     AssemblyLoadContext.Default.Resolving += ResolveAssembly;
-                    //     try
-                    //     {
-                    //         foreach (var plugin in loggingPlugins)
-                    //         {
-                    //             Type type = Type.GetType(plugin, throwOnError: true);
-                    //             var loggingPlugin = Activator.CreateInstance(type) as IAgentLoggingPlugin;
-                    //             ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
-                    //             executionContext.Plugins.Add(loggingPlugin);
-                    //         }
-                    //     }
-                    //     catch (Exception ex)
-                    //     {
-                    //         // any exception throw from plugin will fail the command.
-                    //         executionContext.Error(ex.ToString());
-                    //     }
-                    //     finally
-                    //     {
-                    //         AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
-                    //     }
-
-                    //     return executionContext.Run(loggingPlugins).GetAwaiter().GetResult();
-                    // }
                 }
                 else
                 {

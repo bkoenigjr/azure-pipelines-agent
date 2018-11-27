@@ -88,7 +88,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                                                          cancellationToken: jobContext.CancellationToken);
 
             // construct plugin context
-            AgentPluginDaemonContext pluginContext = new AgentPluginDaemonContext
+            AgentLogPluginHostContext pluginContext = new AgentLogPluginHostContext
             {
                 Repositories = jobContext.Repositories,
                 Endpoints = jobContext.Endpoints,
@@ -137,7 +137,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 while (_outputs.TryDequeue(out string output))
                 {
-                    context.Output(output);
+                    if (output.StartsWith("##[plugin.trace]", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Trace.Info(output.Substring("##[plugin.trace]".Length));
+                    }
+                    else
+                    {
+                        context.Output(output);
+                    }
                 }
 
                 await Task.WhenAny(Task.Delay(100), _daemonProcess);
@@ -145,7 +152,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             while (_outputs.TryDequeue(out string output))
             {
-                context.Output(output);
+                if (output.StartsWith("##[plugin.trace]", StringComparison.OrdinalIgnoreCase))
+                {
+                    Trace.Info(output.Substring("##[plugin.trace]".Length));
+                }
+                else
+                {
+                    context.Output(output);
+                }
             }
 
             await _daemonProcess;

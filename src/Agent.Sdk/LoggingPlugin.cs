@@ -28,8 +28,11 @@ namespace Agent.Sdk
         public string Out { get; set; }
     }
 
-    public interface IDaemonPluginContext
+    public interface IAgentLogPluginContext
     {
+        // default SystemConnection back to service use the job oauth token
+        VssConnection VssConnection { get; }
+
         // task info for all steps
         IList<Pipelines.TaskStepDefinitionReference> Steps { get; }
 
@@ -42,32 +45,74 @@ namespace Agent.Sdk
         // all variables
         IDictionary<string, VariableValue> Variables { get; }
 
-        // default SystemConnection back to service use the job oauth token
-        VssConnection VssConnection { get; }
-
         // agent log
         void Trace(string message);
 
         // user log (job log)
         void Output(string message);
+    }
+
+    public class AgentLogPluginContext : IAgentLogPluginContext
+    {
+        private string _pluginName;
+        private AgentLogPluginHostContext _hostContext;
+
+        // default SystemConnection back to service use the job oauth token
+        public VssConnection VssConnection { get; }
+
+        // task info for all steps
+        public IList<Pipelines.TaskStepDefinitionReference> Steps { get; }
+
+        // all endpoints
+        public IList<ServiceEndpoint> Endpoints { get; }
+
+        // all repositories
+        public IList<Pipelines.RepositoryResource> Repositories { get; }
+
+        // all variables
+        public IDictionary<string, VariableValue> Variables { get; }
+
+        public AgentLogPluginContext(
+            AgentLogPluginHostContext hostContext,
+            string pluginNme,
+            VssConnection connection,
+            IList<Pipelines.TaskStepDefinitionReference> steps,
+            IList<ServiceEndpoint> endpoints,
+            IList<Pipelines.RepositoryResource> repositories,
+            IDictionary<string, VariableValue> variables)
+        {
+            _hostContext = hostContext;
+            _pluginName = pluginNme;
+            VssConnection = connection;
+            Steps = steps;
+            Endpoints = endpoints;
+            Repositories = repositories;
+            Variables = variables;
+        }
+
+        // agent log
+        public void Trace(string message)
+        {
+            _hostContext.Trace(message);
+        }
 
         // user log (job log)
-        void Warning(string message);
-
-        // task info for current step
-        Pipelines.TaskStepDefinitionReference GetCurrentStep(JobOutput output);
+        public void Output(string message)
+        {
+            _hostContext.Output($"{_pluginName}: {message}");
+        }
     }
 
-    public interface IAgentDaemonPlugin
+    public interface IAgentLogPlugin
     {
-        string Name { get; }
+        string FriendlyName { get; }
 
-        Task ProcessAsync(AgentPluginDaemonContext context, Pipelines.TaskStepDefinitionReference step, IList<string> outputs, CancellationToken token);
+        Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output);
 
-        Task FinalizeAsync(AgentPluginDaemonContext context);
+        Task FinalizeAsync(IAgentLogPluginContext context);
     }
 
-    public class AgentPluginDaemonContext
+    public class AgentLogPluginHostContext
     {
         private VssConnection _connection;
 
@@ -79,7 +124,7 @@ namespace Agent.Sdk
         // agent log
         public void Trace(string message)
         {
-            Console.WriteLine(message);
+            Console.WriteLine($"##[plugin.trace]{message}");
         }
 
         // user log (job log)
@@ -88,10 +133,9 @@ namespace Agent.Sdk
             Console.WriteLine(message);
         }
 
-        // user log (job log)
-        public void Warning(string message)
+        public IAgentLogPluginContext CreatePluginContext(IAgentLogPlugin plugin)
         {
-            Console.WriteLine(message);
+            return new AgentLogPluginContext(this, plugin.FriendlyName, VssConnection, Steps.Values.ToList(), Endpoints, Repositories, Variables);
         }
 
         [JsonIgnore]
@@ -211,75 +255,83 @@ namespace Agent.Sdk
     }
 
 
-    public class AgentDaemonPluginHost
+    public class AgentLogPluginHost
     {
         private readonly TaskCompletionSource<int> _jobFinished = new TaskCompletionSource<int>();
-        private readonly TaskCompletionSource<int> _jobCancelled = new TaskCompletionSource<int>();
         private readonly Dictionary<string, ConcurrentQueue<JobOutput>> _outputQueue = new Dictionary<string, ConcurrentQueue<JobOutput>>();
-        private List<IAgentDaemonPlugin> _plugins;
-        private AgentPluginDaemonContext _daemonContext;
+        private readonly Dictionary<string, IAgentLogPluginContext> _pluginContexts = new Dictionary<string, IAgentLogPluginContext>();
+        private List<IAgentLogPlugin> _plugins;
+        private AgentLogPluginHostContext _hostContext;
 
-        public AgentDaemonPluginHost(AgentPluginDaemonContext daemonContext, List<IAgentDaemonPlugin> plugins)
+        public AgentLogPluginHost(AgentLogPluginHostContext hostContext, List<IAgentLogPlugin> plugins)
         {
-            _daemonContext = daemonContext;
+            _hostContext = hostContext;
             _plugins = plugins;
             foreach (var plugin in _plugins)
             {
                 string typeName = plugin.GetType().FullName;
                 _outputQueue[typeName] = new ConcurrentQueue<JobOutput>();
+                _pluginContexts[typeName] = _hostContext.CreatePluginContext(plugin);
             }
         }
 
         public async Task Run()
         {
-            CancellationTokenSource tokenSource = new CancellationTokenSource();
-            List<Task> processTasks = new List<Task>();
-            foreach (var plugin in _plugins)
+            using (CancellationTokenSource tokenSource = new CancellationTokenSource())
             {
-                // start process plugins background
-                processTasks.Add(Run(plugin, tokenSource.Token));
-            }
-
-            // waiting for job finish event
-            await _jobFinished.Task;
-
-            // stop current process tasks
-            tokenSource.Cancel();
-            await Task.WhenAll(processTasks);
-
-            foreach (var task in processTasks)
-            {
-                try
+                Dictionary<string, Task> processTasks = new Dictionary<string, Task>();
+                foreach (var plugin in _plugins)
                 {
-                    await task;
-                }
-                catch (Exception ex)
-                {
-
-                }
-            }
-
-            // job has finished, all daemon plugins should start their finalize process
-            List<Task> finalizeTasks = new List<Task>();
-            foreach (var plugin in _plugins)
-            {
-                var finalize = plugin.FinalizeAsync(_daemonContext);
-                finalizeTasks.Add(finalize);
-            }
-
-            await Task.WhenAll(finalizeTasks);
-
-            foreach (var task in finalizeTasks)
-            {
-                try
-                {
-                    await task;
-                }
-                catch (Exception ex)
-                {
-
+                    // start process plugins background
+                    _hostContext.Trace($"Start process task for plugin '{plugin.FriendlyName}'");
+                    var task = RunAsync(plugin, tokenSource.Token);
+                    processTasks[plugin.FriendlyName] = task;
                 }
 
+                // waiting for job finish event
+                await _jobFinished.Task;
+                _hostContext.Trace($"Stop process task for all plugins");
+
+                // stop current process tasks
+                tokenSource.Cancel();
+                await Task.WhenAll(processTasks.Values);
+
+                foreach (var task in processTasks)
+                {
+                    try
+                    {
+                        await task.Value;
+                        _hostContext.Trace($"Plugin '{task.Key}' finished log process.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _hostContext.Output($"Plugin '{task.Key}' failed with: {ex}");
+                    }
+                }
+
+                // job has finished, all log plugins should start their finalize process
+                Dictionary<string, Task> finalizeTasks = new Dictionary<string, Task>();
+                foreach (var plugin in _plugins)
+                {
+                    _hostContext.Trace($"Start finalize for plugin '{plugin.FriendlyName}'");
+                    var finalize = plugin.FinalizeAsync(_pluginContexts[plugin.GetType().FullName]);
+                    finalizeTasks[plugin.FriendlyName] = finalize;
+                }
+
+                await Task.WhenAll(finalizeTasks.Values);
+
+                foreach (var task in finalizeTasks)
+                {
+                    try
+                    {
+                        await task.Value;
+                        _hostContext.Trace($"Plugin '{task.Key}' finished job finalize.");
+                    }
+                    catch (Exception ex)
+                    {
+                        _hostContext.Output($"Plugin '{task.Key}' failed with: {ex}");
+                    }
+                }
             }
         }
 
@@ -300,51 +352,60 @@ namespace Agent.Sdk
             _jobFinished.TrySetResult(0);
         }
 
-        private async Task Run(IAgentDaemonPlugin plugin, CancellationToken token)
+        private async Task RunAsync(IAgentLogPlugin plugin, CancellationToken token)
         {
+            List<string> errors = new List<string>();
             string typeName = plugin.GetType().FullName;
+            var context = _pluginContexts[typeName];
             while (!token.IsCancellationRequested)
             {
-                List<Guid> steps = new List<Guid>();
-                Dictionary<Guid, List<string>> batch = new Dictionary<Guid, List<string>>();
-                while (_outputQueue[typeName].TryDequeue(out JobOutput output))
+                while (_outputQueue[typeName].TryDequeue(out JobOutput line))
                 {
-                    if (!steps.Contains(output.Id))
+                    try
                     {
-                        steps.Add(output.Id);
-                        batch[output.Id] = new List<string>();
+                        await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
                     }
-
-                    batch[output.Id].Add(output.Out);
-                }
-                if (steps.Count > 0)
-                {
-                    foreach (var step in steps)
+                    catch (Exception ex)
                     {
-                        try
+                        // ignore exception
+                        // only trace the first 10 errors.
+                        if (errors.Count < 10)
                         {
-                            await plugin.ProcessAsync(_daemonContext, _daemonContext.Steps[step], batch[step], token);
-                        }
-                        catch (Exception ex)
-                        {
-                            // trace and ignore exception
+                            errors.Add(ex.ToString());
                         }
                     }
                 }
 
+                // back-off before pull output queue again.
+                await Task.Delay(500);
+            }
+
+            // process all remaining outputs
+            context.Output($"Pending process {_outputQueue[typeName].Count} log lines.");
+            while (_outputQueue[typeName].TryDequeue(out JobOutput line))
+            {
                 try
                 {
-                    await Task.Delay(10000, token);
+                    await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
                 }
                 catch (Exception ex)
                 {
-                    // trace and ignore exception
+                    // ignore exception
+                    // only trace the first 10 errors.
+                    if (errors.Count < 10)
+                    {
+                        errors.Add(ex.ToString());
+                    }
                 }
             }
 
-            if (_outputQueue[typeName].Count() > 0)
+            // print out error to user.
+            if (errors.Count > 0)
             {
-                // trace lines didn't get processed.
+                foreach (var error in errors)
+                {
+                    context.Output($"Plugin '{plugin.FriendlyName}' fail to process output: {error}");
+                }
             }
         }
     }

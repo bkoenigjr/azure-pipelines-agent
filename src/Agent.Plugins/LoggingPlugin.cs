@@ -15,25 +15,25 @@ using Microsoft.VisualStudio.Services.Common;
 
 namespace Agent.Plugins.Logging
 {
-    public class LoggingPlugin : IAgentDaemonPlugin
+    public class LoggingPlugin : IAgentLogPlugin
     {
-        public string Name => "Re-save Log";
+        public string FriendlyName => "Re-save Log";
 
         private string _fileName = $"{Guid.NewGuid().ToString("N")}.log";
 
-        public async Task FinalizeAsync(AgentPluginDaemonContext context)
+        public async Task FinalizeAsync(IAgentLogPluginContext context)
         {
             context.Trace("DEBUG_FINISH");
             var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
             await File.AppendAllTextAsync(file, StringUtil.ConvertToJson(context));
         }
 
-        public async Task ProcessAsync(AgentPluginDaemonContext context, Pipelines.TaskStepDefinitionReference step, IList<string> outputs, CancellationToken token)
+        public async Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output)
         {
             context.Trace("DEBUG_PROCESS");
             var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
             context.Output($"Copy... {step.Name}");
-            await File.AppendAllLinesAsync(file, outputs);
+            await File.AppendAllLinesAsync(file, new List<string>() { output });
         }
     }
 }
