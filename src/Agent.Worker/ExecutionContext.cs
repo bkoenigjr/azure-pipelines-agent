@@ -23,6 +23,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
     [ServiceLocator(Default = typeof(ExecutionContext))]
     public interface IExecutionContext : IAgentService
     {
+        Guid Id { get; }
         Task ForceCompleted { get; }
         TaskResult? Result { get; set; }
         string ResultCode { get; set; }
@@ -43,7 +44,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         // Initialize
         void InitializeJob(Pipelines.AgentJobRequestMessage message, CancellationToken token);
         void CancelToken();
-        IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null);
+        IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = true);
 
         // logging
         bool WriteDebug { get; }
@@ -78,6 +79,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private IJobServerQueue _jobServerQueue;
         private IExecutionContext _parentExecutionContext;
 
+        private bool _outputForward = false;
         private Guid _mainTimelineId;
         private Guid _detailTimelineId;
         private int _childTimelineRecordOrder = 0;
@@ -88,6 +90,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         // only job level ExecutionContext will track throttling delay.
         private long _totalThrottlingDelayInMilliseconds = 0;
 
+        public Guid Id => _record.Id;
         public Task ForceCompleted => _forceCompleted.Task;
         public CancellationToken CancellationToken => _cancellationTokenSource.Token;
         public List<ServiceEndpoint> Endpoints { get; private set; }
@@ -154,7 +157,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             });
         }
 
-        public IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null)
+        public IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = true)
         {
             Trace.Entering();
 
@@ -171,7 +174,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             child._parentExecutionContext = this;
             child.PrependPath = PrependPath;
             child.Container = Container;
-
+            child._outputForward = outputForward;
             child.InitializeTimelineRecord(_mainTimelineId, recordId, _record.Id, ExecutionContextType.Task, displayName, refName, ++_childTimelineRecordOrder);
 
             child._logger = HostContext.CreateService<IPagingLogger>();
@@ -533,8 +536,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             // write to plugin daemon, 
-            if (_daemon != null)
+            if (_outputForward)
             {
+                if (_daemon == null)
+                {
+                    _daemon = HostContext.GetService<IAgentPluginDaemon>();
+                }
+
                 _daemon.Write(_record.Id, msg);
             }
 

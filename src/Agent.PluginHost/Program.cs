@@ -28,6 +28,9 @@ namespace Agent.PluginHost
             AppContext.SetSwitch("System.Net.Http.UseSocketsHttpHandler", false);
             Console.CancelKeyPress += Console_CancelKeyPress;
 
+            // Set encoding to UTF8, process invoker will use UTF8 write to STDIN
+            Console.InputEncoding = Encoding.UTF8;
+            Console.OutputEncoding = Encoding.UTF8;
             try
             {
                 string pluginType = args[0];
@@ -39,9 +42,6 @@ namespace Agent.PluginHost
                     string assemblyQualifiedName = args[1];
                     ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
 
-                    // Set encoding to UTF8, process invoker will use UTF8 write to STDIN
-                    Console.InputEncoding = Encoding.UTF8;
-                    Console.OutputEncoding = Encoding.UTF8;
                     string serializedContext = Console.ReadLine();
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
 
@@ -116,15 +116,23 @@ namespace Agent.PluginHost
                 {
                     ArgUtil.NotNull(args, nameof(args));
 
+                    string logFile = Path.Combine(Directory.GetCurrentDirectory(), $"{Guid.NewGuid().ToString("D")}.log");
+
                     // read through commandline arg to get the instance id
                     var instanceId = args.Skip(1).FirstOrDefault();
                     ArgUtil.NotNullOrEmpty(instanceId, nameof(instanceId));
 
+                    File.AppendAllText(logFile, instanceId);
+                    File.AppendAllLines(logFile, Array.Empty<string>());
+
                     // read STDIN, the first line will be the HostContext for the daemon process
                     string serializedContext = Console.ReadLine();
+                    File.AppendAllText(logFile, serializedContext);
+                    File.AppendAllLines(logFile, Array.Empty<string>());
+
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
-                    AgentPluginDaemonHostContext hostContext = StringUtil.ConvertFromJson<AgentPluginDaemonHostContext>(serializedContext);
-                    ArgUtil.NotNull(hostContext, nameof(hostContext));
+                    AgentPluginDaemonContext daemonContext = StringUtil.ConvertFromJson<AgentPluginDaemonContext>(serializedContext);
+                    ArgUtil.NotNull(daemonContext, nameof(daemonContext));
 
                     // read through commandline arg to get all plugin assembly name                    
                     List<IAgentDaemonPlugin> daemonPlugins = new List<IAgentDaemonPlugin>();
@@ -159,7 +167,7 @@ namespace Agent.PluginHost
                     }
 
                     // start the daemon process
-                    var daemon = new AgentDaemonPluginHost(hostContext, daemonPlugins);
+                    var daemon = new AgentDaemonPluginHost(daemonContext, daemonPlugins);
                     Task daemonTask = daemon.Run();
                     while (true)
                     {
@@ -169,13 +177,6 @@ namespace Agent.PluginHost
                             // singal all plugins, the job has finished.
                             // plugin need to start their finalize process.
                             daemon.Finish();
-                            break;
-                        }
-                        else if (string.Equals(consoleInput, $"##vso[daemon.cancel]{instanceId}", StringComparison.OrdinalIgnoreCase))
-                        {
-                            // singal all plugins, the job has cancelled
-                            // plugin need to stop running, otherwise we will kill it.
-                            daemon.Cancel();
                             break;
                         }
                         else

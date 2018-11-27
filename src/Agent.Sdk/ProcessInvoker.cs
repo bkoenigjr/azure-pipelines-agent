@@ -153,7 +153,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
-            Stream standardInStream,
+            StreamReader standardInStream,
             CancellationToken cancellationToken)
         {
             ArgUtil.Null(_proc, nameof(_proc));
@@ -449,14 +449,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             });
         }
 
-        private void StartWriteStream(Stream reader, StreamWriter writer)
+        private void StartWriteStream(StreamReader reader, StreamWriter writer)
         {
-            StreamReader utfReader = new StreamReader(reader, Encoding.UTF8);
             Task.Run(() =>
             {
-                while (!utfReader.EndOfStream)
+                while (!reader.EndOfStream)
                 {
-                    string line = utfReader.ReadLine();
+                    string line = reader.ReadLine();
                     if (line != null)
                     {
                         writer.WriteLine(line);

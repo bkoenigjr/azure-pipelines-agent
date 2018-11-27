@@ -21,19 +21,19 @@ namespace Agent.Plugins.Logging
 
         private string _fileName = $"{Guid.NewGuid().ToString("N")}.log";
 
-        public async Task ProcessAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token)
+        public async Task FinalizeAsync(AgentPluginDaemonContext context)
         {
-            executionContext.Trace("DEBUG_PROCESS");
-            var file = Path.Combine(executionContext.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
-            executionContext.Output($"Copy... {executionContext.GetCurrentStep(outputs.First()).Name}");
-            await File.AppendAllLinesAsync(file, outputs.Select(x => x.Output));
+            context.Trace("DEBUG_FINISH");
+            var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
+            await File.AppendAllTextAsync(file, StringUtil.ConvertToJson(context));
         }
 
-        public async Task FinalizeAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token)
+        public async Task ProcessAsync(AgentPluginDaemonContext context, Pipelines.TaskStepDefinitionReference step, IList<string> outputs, CancellationToken token)
         {
-            executionContext.Trace("DEBUG_FINISH");
-            var file = Path.Combine(executionContext.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
-            await File.AppendAllLinesAsync(file, outputs.Select(x => x.Output));
+            context.Trace("DEBUG_PROCESS");
+            var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
+            context.Output($"Copy... {step.Name}");
+            await File.AppendAllLinesAsync(file, outputs);
         }
     }
 }

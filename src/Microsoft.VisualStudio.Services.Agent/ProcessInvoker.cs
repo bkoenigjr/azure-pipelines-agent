@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.Services.Agent.Util;
 using System;
+using System.IO;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -56,6 +57,18 @@ namespace Microsoft.VisualStudio.Services.Agent
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
+            CancellationToken cancellationToken);
+
+        Task<int> ExecuteAsync(
+            string workingDirectory,
+            string fileName,
+            string arguments,
+            IDictionary<string, string> environment,
+            bool requireExitCodeZero,
+            Encoding outputEncoding,
+            bool killProcessOnCancel,
+            IList<string> contentsToStandardIn,
+            StreamReader standardInStream,
             CancellationToken cancellationToken);
     }
 
@@ -156,6 +169,31 @@ namespace Microsoft.VisualStudio.Services.Agent
                 cancellationToken: cancellationToken);
         }
 
+
+        public Task<int> ExecuteAsync(
+            string workingDirectory,
+            string fileName,
+            string arguments,
+            IDictionary<string, string> environment,
+            bool requireExitCodeZero,
+            Encoding outputEncoding,
+            bool killProcessOnCancel,
+            IList<string> contentsToStandardIn,
+            CancellationToken cancellationToken)
+        {
+            return ExecuteAsync(
+                workingDirectory: workingDirectory,
+                fileName: fileName,
+                arguments: arguments,
+                environment: environment,
+                requireExitCodeZero: requireExitCodeZero,
+                outputEncoding: outputEncoding,
+                killProcessOnCancel: killProcessOnCancel,
+                contentsToStandardIn: contentsToStandardIn,
+                standardInStream: null,
+                cancellationToken: cancellationToken);
+        }
+
         public async Task<int> ExecuteAsync(
             string workingDirectory,
             string fileName,
@@ -165,6 +203,7 @@ namespace Microsoft.VisualStudio.Services.Agent
             Encoding outputEncoding,
             bool killProcessOnCancel,
             IList<string> contentsToStandardIn,
+            StreamReader standardInStream,
             CancellationToken cancellationToken)
         {
             _invoker.ErrorDataReceived += this.ErrorDataReceived;
@@ -178,6 +217,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 outputEncoding,
                 killProcessOnCancel,
                 contentsToStandardIn,
+                standardInStream,
                 cancellationToken);
         }
 

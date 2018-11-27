@@ -11,13 +11,15 @@ using System.Runtime.Loader;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
+using System.Collections.Concurrent;
+using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
     [ServiceLocator(Default = typeof(AgentPluginDaemon))]
     public interface IAgentPluginDaemon : IAgentService
     {
-        Task StartPluginDaemon(IExecutionContext context, List<IStep> steps);
+        Task StartPluginDaemon(IExecutionContext jobContext, List<IStep> steps);
         Task StopPluginDaemon(IExecutionContext context);
         void Write(Guid stepId, string message);
     }
@@ -25,6 +27,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
     public sealed class AgentPluginDaemon : AgentService, IAgentPluginDaemon
     {
         private readonly Guid _instanceId = Guid.NewGuid();
+
+        private Task<int> _daemonProcess = null;
+        private readonly MemoryStream _redirectedStdin = new MemoryStream();
+        private StreamWriter _stdinWriter;
+        private StreamReader _stdinReader;
+
+        private readonly ConcurrentQueue<string> _outputs = new ConcurrentQueue<string>();
 
         private readonly HashSet<string> _daemonPlugins = new HashSet<string>()
         {
@@ -34,11 +43,16 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         public override void Initialize(IHostContext hostContext)
         {
-
+            base.Initialize(hostContext);
+            _stdinWriter = new StreamWriter(_redirectedStdin, Encoding.UTF8);
+            _stdinReader = new StreamReader(_redirectedStdin, Encoding.UTF8);
         }
 
-        public async Task StartPluginDaemon(IExecutionContext context, List<IStep> steps)
+        public Task StartPluginDaemon(IExecutionContext jobContext, List<IStep> steps)
         {
+            Trace.Entering();
+            ArgUtil.NotNull(jobContext, nameof(jobContext));
+
             // Resolve the working directory.
             string workingDirectory = HostContext.GetDirectory(WellKnownDirectory.Work);
             ArgUtil.Directory(workingDirectory, nameof(workingDirectory));
@@ -54,78 +68,98 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 arguments = $"{arguments} \"{plugin}\"";
             }
 
-            MemoryStream redirectStdin = new MemoryStream();
-            StreamWriter stdinWriter = new StreamWriter(redire)
             var processInvoker = HostContext.CreateService<IProcessInvoker>();
-            processInvoker.OutputDataReceived += outputHandler;
-            processInvoker.ErrorDataReceived += outputHandler;
 
-            // Execute the process. Exit code 0 should always be returned.
-            // A non-zero exit code indicates infrastructural failure.
-            // Task failure should be communicated over STDOUT using ## commands.
-            await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
-                                              fileName: file,
-                                              arguments: arguments,
-                                              environment: null,
-                                              requireExitCodeZero: true,
-                                              outputEncoding: Encoding.UTF8,
-                                              killProcessOnCancel: false,
-                                              cancellationToken: context.CancellationToken);
+            processInvoker.OutputDataReceived += (object sender, ProcessDataReceivedEventArgs e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                {
+                    _outputs.Enqueue(e.Data);
+                }
+            };
+            processInvoker.ErrorDataReceived += (object sender, ProcessDataReceivedEventArgs e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Data))
+                {
+                    _outputs.Enqueue(e.Data);
+                }
+            };
+
+            _daemonProcess = processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
+                                                         fileName: file,
+                                                         arguments: arguments,
+                                                         environment: null,
+                                                         requireExitCodeZero: true,
+                                                         outputEncoding: Encoding.UTF8,
+                                                         killProcessOnCancel: true,
+                                                         contentsToStandardIn: null,
+                                                         standardInStream: _stdinReader,
+                                                         cancellationToken: jobContext.CancellationToken);
 
             // construct plugin context
-            AgentTaskPluginExecutionContext pluginContext = new AgentTaskPluginExecutionContext
+            AgentPluginDaemonContext pluginContext = new AgentPluginDaemonContext
             {
-                Inputs = inputs,
-                Repositories = context.Repositories,
-                Endpoints = context.Endpoints
+                Repositories = jobContext.Repositories,
+                Endpoints = jobContext.Endpoints,
+                Variables = new Dictionary<string, VariableValue>()
             };
+
             // variables
-            foreach (var publicVar in runtimeVariables.Public)
+            foreach (var publicVar in jobContext.Variables.Public)
             {
                 pluginContext.Variables[publicVar.Key] = publicVar.Value;
             }
-            foreach (var publicVar in runtimeVariables.Private)
+            foreach (var publicVar in jobContext.Variables.Private)
             {
                 pluginContext.Variables[publicVar.Key] = new VariableValue(publicVar.Value, true);
             }
-            // task variables (used by wrapper task)
-            foreach (var publicVar in context.TaskVariables.Public)
-            {
-                pluginContext.TaskVariables[publicVar.Key] = publicVar.Value;
-            }
-            foreach (var publicVar in context.TaskVariables.Private)
-            {
-                pluginContext.TaskVariables[publicVar.Key] = new VariableValue(publicVar.Value, true);
-            }
 
-            using (var processInvoker = HostContext.CreateService<IProcessInvoker>())
+            // steps
+            Dictionary<Guid, Pipelines.TaskStepDefinitionReference> contextSteps = new Dictionary<Guid, Pipelines.TaskStepDefinitionReference>();
+            foreach (var step in steps)
             {
-                processInvoker.OutputDataReceived += outputHandler;
-                processInvoker.ErrorDataReceived += outputHandler;
-
-                // Execute the process. Exit code 0 should always be returned.
-                // A non-zero exit code indicates infrastructural failure.
-                // Task failure should be communicated over STDOUT using ## commands.
-                await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
-                                                  fileName: file,
-                                                  arguments: arguments,
-                                                  environment: environment,
-                                                  requireExitCodeZero: true,
-                                                  outputEncoding: Encoding.UTF8,
-                                                  killProcessOnCancel: false,
-                                                  contentsToStandardIn: new List<string>() { JsonUtility.ToString(pluginContext) },
-                                                  cancellationToken: context.CancellationToken);
+                var taskStep = step as ITaskRunner;
+                if (taskStep != null)
+                {
+                    contextSteps[taskStep.ExecutionContext.Id] = taskStep.Task.Reference;
+                }
             }
+            pluginContext.Steps = contextSteps;
+            string contextJson = JsonUtility.ToString(pluginContext);
+            Trace.Info(contextJson);
+
+            // send context through STDIN
+            _stdinWriter.WriteLine(contextJson);
+
+            return Task.CompletedTask;
         }
 
-        public Task StopPluginDaemon(IExecutionContext context)
+        public async Task StopPluginDaemon(IExecutionContext context)
         {
-            throw new NotImplementedException();
+            // send instruction code to plugin daemon.
+            // daemon will stop the routine process and give every plugin a chance to participate into job finalization 
+            _stdinWriter.WriteLine($"##vso[daemon.finish]{_instanceId.ToString("D")}");
+
+            // print out outputs from plugin daemon and wait for plugin finish
+            while (!_daemonProcess.IsCompleted)
+            {
+                while (_outputs.TryDequeue(out string output))
+                {
+                    context.Output(output);
+                }
+
+                await Task.WhenAny(Task.Delay(100), _daemonProcess);
+            }
+
+            await _daemonProcess;
         }
 
         public void Write(Guid stepId, string message)
         {
-            throw new NotImplementedException();
+            if (!string.IsNullOrEmpty(message))
+            {
+                _stdinWriter.WriteLine(StringUtil.ConvertToJson(new JobOutput() { Id = stepId, Out = message }));
+            }
         }
     }
 
@@ -391,7 +425,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     {
                         stderr.Add(e.Data);
                     };
-                }; ;
+                };
 
                 int returnCode = await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
                                                                    fileName: file,

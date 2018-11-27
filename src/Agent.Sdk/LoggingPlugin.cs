@@ -22,10 +22,10 @@ namespace Agent.Sdk
     public class JobOutput
     {
         [DataMember]
-        public Guid StepId { get; set; }
+        public Guid Id { get; set; }
 
         [DataMember]
-        public string Output { get; set; }
+        public string Out { get; set; }
     }
 
     public interface IDaemonPluginContext
@@ -62,12 +62,12 @@ namespace Agent.Sdk
     {
         string Name { get; }
 
-        Task ProcessAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token);
+        Task ProcessAsync(AgentPluginDaemonContext context, Pipelines.TaskStepDefinitionReference step, IList<string> outputs, CancellationToken token);
 
-        Task FinalizeAsync(IDaemonPluginContext executionContext, IList<JobOutput> outputs, CancellationToken token);
+        Task FinalizeAsync(AgentPluginDaemonContext context);
     }
 
-    public class AgentPluginDaemonHostContext
+    public class AgentPluginDaemonContext
     {
         private VssConnection _connection;
 
@@ -75,6 +75,24 @@ namespace Agent.Sdk
         public List<Pipelines.RepositoryResource> Repositories { get; set; }
         public Dictionary<string, VariableValue> Variables { get; set; }
         public Dictionary<Guid, Pipelines.TaskStepDefinitionReference> Steps { get; set; }
+
+        // agent log
+        public void Trace(string message)
+        {
+            Console.WriteLine(message);
+        }
+
+        // user log (job log)
+        public void Output(string message)
+        {
+            Console.WriteLine(message);
+        }
+
+        // user log (job log)
+        public void Warning(string message)
+        {
+            Console.WriteLine(message);
+        }
 
         [JsonIgnore]
         public VssConnection VssConnection
@@ -87,11 +105,6 @@ namespace Agent.Sdk
                 }
                 return _connection;
             }
-        }
-
-        public IDaemonPluginContext CreatePluginContext(IAgentDaemonPlugin plugin)
-        {
-            return null;
         }
 
         private VssConnection InitializeVssConnection()
@@ -202,73 +215,82 @@ namespace Agent.Sdk
     {
         private readonly TaskCompletionSource<int> _jobFinished = new TaskCompletionSource<int>();
         private readonly TaskCompletionSource<int> _jobCancelled = new TaskCompletionSource<int>();
-        private Dictionary<string, int> _processTimer = new Dictionary<string, int>();
         private readonly Dictionary<string, ConcurrentQueue<JobOutput>> _outputQueue = new Dictionary<string, ConcurrentQueue<JobOutput>>();
         private List<IAgentDaemonPlugin> _plugins;
-        private AgentPluginDaemonHostContext _hostContext;
+        private AgentPluginDaemonContext _daemonContext;
 
-        public AgentDaemonPluginHost(AgentPluginDaemonHostContext hostContext, List<IAgentDaemonPlugin> plugins)
+        public AgentDaemonPluginHost(AgentPluginDaemonContext daemonContext, List<IAgentDaemonPlugin> plugins)
         {
-            _hostContext = hostContext;
+            _daemonContext = daemonContext;
             _plugins = plugins;
             foreach (var plugin in _plugins)
             {
                 string typeName = plugin.GetType().FullName;
                 _outputQueue[typeName] = new ConcurrentQueue<JobOutput>();
-                _processTimer[typeName] = 5000;
             }
         }
 
-        public async Task<Int32> Run()
+        public async Task Run()
         {
             CancellationTokenSource tokenSource = new CancellationTokenSource();
             List<Task> processTasks = new List<Task>();
             foreach (var plugin in _plugins)
             {
-                // start process plugins backgroud
+                // start process plugins background
                 processTasks.Add(Run(plugin, tokenSource.Token));
             }
 
-            // waiting for job cancel or job finish
-            var completedTask = await Task.WhenAny(_jobCancelled.Task, _jobFinished.Task);
+            // waiting for job finish event
+            await _jobFinished.Task;
 
             // stop current process tasks
             tokenSource.Cancel();
             await Task.WhenAll(processTasks);
 
-            if (completedTask == _jobFinished.Task)
+            foreach (var task in processTasks)
             {
-                // job has finished, all daemon plugins should start their finalize process
-                List<Task> finalizeTasks = new List<Task>();
-                foreach (var plugin in _plugins)
+                try
                 {
-                    finalizeTasks.Add(FinalizeAsync(plugin));
+                    await task;
+                }
+                catch (Exception ex)
+                {
+
+                }
+            }
+
+            // job has finished, all daemon plugins should start their finalize process
+            List<Task> finalizeTasks = new List<Task>();
+            foreach (var plugin in _plugins)
+            {
+                var finalize = plugin.FinalizeAsync(_daemonContext);
+                finalizeTasks.Add(finalize);
+            }
+
+            await Task.WhenAll(finalizeTasks);
+
+            foreach (var task in finalizeTasks)
+            {
+                try
+                {
+                    await task;
+                }
+                catch (Exception ex)
+                {
+
                 }
 
-                await Task.WhenAll(finalizeTasks);
             }
-            else
-            {
-                // job cancelled
-            }
-
-            return 0;
         }
 
         public void EnqueueConsoleOutput(JobOutput output)
         {
-            if (!string.IsNullOrEmpty(output?.Output))
+            if (!string.IsNullOrEmpty(output?.Out))
             {
                 foreach (var plugin in _plugins)
                 {
                     string typeName = plugin.GetType().FullName;
                     _outputQueue[typeName].Enqueue(output);
-
-                    var queueDepth = _outputQueue[typeName].Count();
-                    if (queueDepth > 5000)
-                    {
-                        _processTimer[typeName] = 1000;
-                    }
                 }
             }
         }
@@ -278,54 +300,51 @@ namespace Agent.Sdk
             _jobFinished.TrySetResult(0);
         }
 
-        public void Cancel()
-        {
-            _jobCancelled.TrySetResult(0);
-        }
-
         private async Task Run(IAgentDaemonPlugin plugin, CancellationToken token)
         {
             string typeName = plugin.GetType().FullName;
-            var pluginContext = _hostContext.CreatePluginContext(plugin);
             while (!token.IsCancellationRequested)
             {
-                // process at most 1000 lines everytime.
-                List<JobOutput> batch = new List<JobOutput>();
+                List<Guid> steps = new List<Guid>();
+                Dictionary<Guid, List<string>> batch = new Dictionary<Guid, List<string>>();
                 while (_outputQueue[typeName].TryDequeue(out JobOutput output))
                 {
-                    batch.Add(output);
-                    if (batch.Count >= 1000)
+                    if (!steps.Contains(output.Id))
                     {
-                        break;
+                        steps.Add(output.Id);
+                        batch[output.Id] = new List<string>();
+                    }
+
+                    batch[output.Id].Add(output.Out);
+                }
+                if (steps.Count > 0)
+                {
+                    foreach (var step in steps)
+                    {
+                        try
+                        {
+                            await plugin.ProcessAsync(_daemonContext, _daemonContext.Steps[step], batch[step], token);
+                        }
+                        catch (Exception ex)
+                        {
+                            // trace and ignore exception
+                        }
                     }
                 }
 
                 try
                 {
-                    if (batch.Count > 0)
-                    {
-                        await plugin.ProcessAsync(pluginContext, batch, token);
-                    }
+                    await Task.Delay(10000, token);
                 }
                 catch (Exception ex)
                 {
                     // trace and ignore exception
                 }
+            }
 
-                // bump the sleep time back when we get less output again
-                if (batch.Count < 1000 && _processTimer[typeName] < 5000)
-                {
-                    _processTimer[typeName] = 5000;
-                }
-
-                try
-                {
-                    await Task.Delay(_processTimer[typeName], token);
-                }
-                catch (Exception ex)
-                {
-                    // trace and ignore exception
-                }
+            if (_outputQueue[typeName].Count() > 0)
+            {
+                // trace lines didn't get processed.
             }
         }
     }
