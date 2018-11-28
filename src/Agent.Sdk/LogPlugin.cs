@@ -18,14 +18,13 @@ using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
 
 namespace Agent.Sdk
 {
-    [DataContract]
-    public class JobOutput
+    public interface IAgentLogPlugin
     {
-        [DataMember]
-        public Guid Id { get; set; }
+        string FriendlyName { get; }
 
-        [DataMember]
-        public string Out { get; set; }
+        Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output);
+
+        Task FinalizeAsync(IAgentLogPluginContext context);
     }
 
     public interface IAgentLogPluginContext
@@ -101,15 +100,6 @@ namespace Agent.Sdk
         {
             _hostContext.Output($"{_pluginName}: {message}");
         }
-    }
-
-    public interface IAgentLogPlugin
-    {
-        string FriendlyName { get; }
-
-        Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output);
-
-        Task FinalizeAsync(IAgentLogPluginContext context);
     }
 
     public class AgentLogPluginHostContext
@@ -254,6 +244,15 @@ namespace Agent.Sdk
         }
     }
 
+    [DataContract]
+    public class JobOutput
+    {
+        [DataMember]
+        public Guid Id { get; set; }
+
+        [DataMember]
+        public string Out { get; set; }
+    }
 
     public class AgentLogPluginHost
     {
@@ -357,31 +356,33 @@ namespace Agent.Sdk
             List<string> errors = new List<string>();
             string typeName = plugin.GetType().FullName;
             var context = _pluginContexts[typeName];
-            while (!token.IsCancellationRequested)
+            using (var registration = token.Register(() => { context.Output($"Pending process {_outputQueue[typeName].Count} log lines."); }))
             {
-                while (_outputQueue[typeName].TryDequeue(out JobOutput line))
+                while (!token.IsCancellationRequested)
                 {
-                    try
+                    while (_outputQueue[typeName].TryDequeue(out JobOutput line))
                     {
-                        await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
-                    }
-                    catch (Exception ex)
-                    {
-                        // ignore exception
-                        // only trace the first 10 errors.
-                        if (errors.Count < 10)
+                        try
                         {
-                            errors.Add(ex.ToString());
+                            await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
+                        }
+                        catch (Exception ex)
+                        {
+                            // ignore exception
+                            // only trace the first 10 errors.
+                            if (errors.Count < 10)
+                            {
+                                errors.Add(ex.ToString());
+                            }
                         }
                     }
-                }
 
-                // back-off before pull output queue again.
-                await Task.Delay(500);
+                    // back-off before pull output queue again.
+                    await Task.Delay(500);
+                }
             }
 
             // process all remaining outputs
-            context.Output($"Pending process {_outputQueue[typeName].Count} log lines.");
             while (_outputQueue[typeName].TryDequeue(out JobOutput line))
             {
                 try

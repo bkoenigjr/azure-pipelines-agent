@@ -284,8 +284,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     jobSteps.AddRange(initResult.JobSteps);
                     jobSteps.AddRange(initResult.PostJobStep);
 
-                    var pluginDaemon = HostContext.GetService<IAgentPluginDaemon>();
-                    await pluginDaemon.StartPluginDaemon(jobContext, jobSteps);
+                    var pluginDaemon = HostContext.GetService<IAgentLogPlugin>();
+                    await pluginDaemon.StartAsync(jobContext, jobSteps);
 
                     return initResult;
                 }
@@ -329,8 +329,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     context.Section(StringUtil.Loc("StepStarting", StringUtil.Loc("FinalizeJob")));
 
                     // Stop agent plugin daemon process
-                    var pluginDaemon = HostContext.GetService<IAgentPluginDaemon>();
-                    await pluginDaemon.StopPluginDaemon(context);
+                    var pluginDaemon = HostContext.GetService<IAgentLogPlugin>();
+                    await pluginDaemon.WaitAsync(context);
                 }
                 catch (Exception ex)
                 {

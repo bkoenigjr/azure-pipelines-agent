@@ -13,9 +13,9 @@ using Microsoft.VisualStudio.Services.Agent.Util;
 using System.IO;
 using Microsoft.VisualStudio.Services.Common;
 
-namespace Agent.Plugins.Logging
+namespace Agent.Plugins.Log
 {
-    public class LoggingPlugin : IAgentLogPlugin
+    public class SampleLogPlugin : IAgentLogPlugin
     {
         public string FriendlyName => "Re-save Log";
 
@@ -25,7 +25,7 @@ namespace Agent.Plugins.Logging
         {
             context.Trace("DEBUG_FINISH");
             var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);
-            await File.AppendAllTextAsync(file, StringUtil.ConvertToJson(context));
+            await File.AppendAllTextAsync(file, StringUtil.ConvertToJson(context.Variables));
         }
 
         public async Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output)
