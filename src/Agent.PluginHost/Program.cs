@@ -115,12 +115,13 @@ namespace Agent.PluginHost
                 else if (string.Equals("log", pluginType, StringComparison.OrdinalIgnoreCase))
                 {
                     ArgUtil.NotNull(args, nameof(args));
+                    ArgUtil.Equal(2, args.Length, nameof(args.Length));
 
                     // read through commandline arg to get the instance id
                     var instanceId = args.Skip(1).FirstOrDefault();
                     ArgUtil.NotNullOrEmpty(instanceId, nameof(instanceId));
 
-                    // read STDIN, the first line will be the HostContext for the daemon process
+                    // read STDIN, the first line will be the HostContext for the log plugin host
                     string serializedContext = Console.ReadLine();
                     ArgUtil.NotNullOrEmpty(serializedContext, nameof(serializedContext));
                     AgentLogPluginHostContext hostContext = StringUtil.ConvertFromJson<AgentLogPluginHostContext>(serializedContext);
@@ -132,15 +133,13 @@ namespace Agent.PluginHost
                     try
                     {
                         HashSet<string> plugins = new HashSet<string>();
-                        for (int index = 2; index < args.Length; index++)
+                        foreach (var pluginAssembly in hostContext.PluginAssemblies)
                         {
-                            string assemblyQualifiedName = args[index];
-                            ArgUtil.NotNullOrEmpty(assemblyQualifiedName, nameof(assemblyQualifiedName));
-                            if (plugins.Add(assemblyQualifiedName))
+                            if (plugins.Add(pluginAssembly))
                             {
                                 try
                                 {
-                                    Type type = Type.GetType(assemblyQualifiedName, throwOnError: true);
+                                    Type type = Type.GetType(pluginAssembly, throwOnError: true);
                                     var loggingPlugin = Activator.CreateInstance(type) as IAgentLogPlugin;
                                     ArgUtil.NotNull(loggingPlugin, nameof(loggingPlugin));
                                     logPlugins.Add(loggingPlugin);
@@ -148,7 +147,7 @@ namespace Agent.PluginHost
                                 catch (Exception ex)
                                 {
                                     // any exception throw from plugin will get trace and ignore, error from daemon will not fail the job.
-                                    hostContext.Trace($"Unable load plugin '{assemblyQualifiedName}':{ex}");
+                                    hostContext.Trace($"Unable load plugin '{pluginAssembly}':{ex}");
                                 }
                             }
                         }
@@ -158,7 +157,7 @@ namespace Agent.PluginHost
                         AssemblyLoadContext.Default.Resolving -= ResolveAssembly;
                     }
 
-                    // start the daemon process
+                    // start the log plugin host
                     var logPluginHost = new AgentLogPluginHost(hostContext, logPlugins);
                     Task hostTask = logPluginHost.Run();
                     while (true)
@@ -174,11 +173,11 @@ namespace Agent.PluginHost
                         else
                         {
                             JobOutput output = StringUtil.ConvertFromJson<JobOutput>(consoleInput);
-                            logPluginHost.EnqueueConsoleOutput(output);
+                            logPluginHost.EnqueueOutput(output);
                         }
                     }
 
-                    // wait for the daemon to finish.
+                    // wait for the host to finish.
                     hostTask.GetAwaiter().GetResult();
 
                     return 0;

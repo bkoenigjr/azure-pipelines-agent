@@ -28,7 +28,7 @@ namespace Agent.Plugins.Log
             await File.AppendAllTextAsync(file, StringUtil.ConvertToJson(context.Variables));
         }
 
-        public async Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output)
+        public async Task ProcessLineAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output)
         {
             context.Trace("DEBUG_PROCESS");
             var file = Path.Combine(context.Variables.GetValueOrDefault("agent.homedirectory").Value, "_diag", _fileName);

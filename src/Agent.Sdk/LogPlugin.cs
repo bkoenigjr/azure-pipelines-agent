@@ -22,7 +22,7 @@ namespace Agent.Sdk
     {
         string FriendlyName { get; }
 
-        Task ProcessAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string output);
+        Task ProcessLineAsync(IAgentLogPluginContext context, Pipelines.TaskStepDefinitionReference step, string line);
 
         Task FinalizeAsync(IAgentLogPluginContext context);
     }
@@ -106,6 +106,7 @@ namespace Agent.Sdk
     {
         private VssConnection _connection;
 
+        public List<String> PluginAssemblies { get; set; }
         public List<ServiceEndpoint> Endpoints { get; set; }
         public List<Pipelines.RepositoryResource> Repositories { get; set; }
         public Dictionary<string, VariableValue> Variables { get; set; }
@@ -334,7 +335,7 @@ namespace Agent.Sdk
             }
         }
 
-        public void EnqueueConsoleOutput(JobOutput output)
+        public void EnqueueOutput(JobOutput output)
         {
             if (!string.IsNullOrEmpty(output?.Out))
             {
@@ -364,7 +365,7 @@ namespace Agent.Sdk
                     {
                         try
                         {
-                            await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
+                            await plugin.ProcessLineAsync(context, _hostContext.Steps[line.Id], line.Out);
                         }
                         catch (Exception ex)
                         {
@@ -387,7 +388,7 @@ namespace Agent.Sdk
             {
                 try
                 {
-                    await plugin.ProcessAsync(context, _hostContext.Steps[line.Id], line.Out);
+                    await plugin.ProcessLineAsync(context, _hostContext.Steps[line.Id], line.Out);
                 }
                 catch (Exception ex)
                 {
