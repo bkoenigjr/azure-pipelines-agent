@@ -44,7 +44,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         // Initialize
         void InitializeJob(Pipelines.AgentJobRequestMessage message, CancellationToken token);
         void CancelToken();
-        IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = true);
+        IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = false);
 
         // logging
         bool WriteDebug { get; }
@@ -74,7 +74,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private readonly List<IAsyncCommandContext> _asyncCommands = new List<IAsyncCommandContext>();
         private readonly HashSet<string> _outputvariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        private IAgentLogPlugin _daemon;
+        private IAgentLogPlugin _logPlugin;
         private IPagingLogger _logger;
         private IJobServerQueue _jobServerQueue;
         private IExecutionContext _parentExecutionContext;
@@ -157,7 +157,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             });
         }
 
-        public IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = true)
+        public IExecutionContext CreateChild(Guid recordId, string displayName, string refName, Variables taskVariables = null, bool outputForward = false)
         {
             Trace.Entering();
 
@@ -538,12 +538,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // write to plugin daemon, 
             if (_outputForward)
             {
-                if (_daemon == null)
+                if (_logPlugin == null)
                 {
-                    _daemon = HostContext.GetService<IAgentLogPlugin>();
+                    _logPlugin = HostContext.GetService<IAgentLogPlugin>();
                 }
 
-                _daemon.Write(_record.Id, msg);
+                _logPlugin.Write(_record.Id, msg);
             }
 
             _jobServerQueue.QueueWebConsoleLine(_record.Id, msg);

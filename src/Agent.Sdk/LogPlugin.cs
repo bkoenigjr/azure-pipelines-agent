@@ -260,6 +260,7 @@ namespace Agent.Sdk
         private readonly TaskCompletionSource<int> _jobFinished = new TaskCompletionSource<int>();
         private readonly Dictionary<string, ConcurrentQueue<JobOutput>> _outputQueue = new Dictionary<string, ConcurrentQueue<JobOutput>>();
         private readonly Dictionary<string, IAgentLogPluginContext> _pluginContexts = new Dictionary<string, IAgentLogPluginContext>();
+        private readonly HashSet<string> _shortCircuited = new HashSet<string>();
         private List<IAgentLogPlugin> _plugins;
         private AgentLogPluginHostContext _hostContext;
 
@@ -279,6 +280,8 @@ namespace Agent.Sdk
         {
             using (CancellationTokenSource tokenSource = new CancellationTokenSource())
             {
+                Task memoryUsageMonitor = StartMemoryUsageMonitor(tokenSource.Token);
+
                 Dictionary<string, Task> processTasks = new Dictionary<string, Task>();
                 foreach (var plugin in _plugins)
                 {
@@ -294,6 +297,7 @@ namespace Agent.Sdk
 
                 // stop current process tasks
                 tokenSource.Cancel();
+                await memoryUsageMonitor;
                 await Task.WhenAll(processTasks.Values);
 
                 foreach (var task in processTasks)
@@ -313,9 +317,17 @@ namespace Agent.Sdk
                 Dictionary<string, Task> finalizeTasks = new Dictionary<string, Task>();
                 foreach (var plugin in _plugins)
                 {
-                    _hostContext.Trace($"Start finalize for plugin '{plugin.FriendlyName}'");
-                    var finalize = plugin.FinalizeAsync(_pluginContexts[plugin.GetType().FullName]);
-                    finalizeTasks[plugin.FriendlyName] = finalize;
+                    string typeName = plugin.GetType().FullName;
+                    if (!_shortCircuited.Contains(typeName))
+                    {
+                        _hostContext.Trace($"Start finalize for plugin '{plugin.FriendlyName}'");
+                        var finalize = plugin.FinalizeAsync(_pluginContexts[plugin.GetType().FullName]);
+                        finalizeTasks[plugin.FriendlyName] = finalize;
+                    }
+                    else
+                    {
+                        _hostContext.Trace($"Skip finalize for plugin '{plugin.FriendlyName}'");
+                    }
                 }
 
                 await Task.WhenAll(finalizeTasks.Values);
@@ -342,7 +354,10 @@ namespace Agent.Sdk
                 foreach (var plugin in _plugins)
                 {
                     string typeName = plugin.GetType().FullName;
-                    _outputQueue[typeName].Enqueue(output);
+                    if (!_shortCircuited.Contains(typeName))
+                    {
+                        _outputQueue[typeName].Enqueue(output);
+                    }
                 }
             }
         }
@@ -352,6 +367,38 @@ namespace Agent.Sdk
             _jobFinished.TrySetResult(0);
         }
 
+        private async Task StartMemoryUsageMonitor(CancellationToken token)
+        {
+            Dictionary<string, Int32> flag = new Dictionary<string, int>();
+            foreach (var queue in _outputQueue)
+            {
+                flag[queue.Key] = 0;
+            }
+
+            while (!token.IsCancellationRequested)
+            {
+                foreach (var queue in _outputQueue)
+                {
+                    if (queue.Value.Count > 1000)
+                    {
+                        _hostContext.Trace($"Plugin '{queue.Key}' has too many buffered outputs.");
+                        flag[queue.Key]++;
+                        if (flag[queue.Key] >= 10)
+                        {
+                            _shortCircuited.Add(queue.Key);
+                        }
+                    }
+                    else
+                    {
+                        _hostContext.Trace($"Plugin '{queue.Key}' has cleared out buffered outputs.");
+                        flag[queue.Key] = 0;
+                    }
+                }
+
+                await Task.WhenAny(Task.Delay(10000), Task.Delay(-1, token));
+            }
+        }
+
         private async Task RunAsync(IAgentLogPlugin plugin, CancellationToken token)
         {
             List<string> errors = new List<string>();
@@ -359,9 +406,9 @@ namespace Agent.Sdk
             var context = _pluginContexts[typeName];
             using (var registration = token.Register(() => { context.Output($"Pending process {_outputQueue[typeName].Count} log lines."); }))
             {
-                while (!token.IsCancellationRequested)
+                while (!_shortCircuited.Contains(typeName) && !token.IsCancellationRequested)
                 {
-                    while (_outputQueue[typeName].TryDequeue(out JobOutput line))
+                    while (!_shortCircuited.Contains(typeName) && _outputQueue[typeName].TryDequeue(out JobOutput line))
                     {
                         try
                         {
@@ -384,7 +431,7 @@ namespace Agent.Sdk
             }
 
             // process all remaining outputs
-            while (_outputQueue[typeName].TryDequeue(out JobOutput line))
+            while (!_shortCircuited.Contains(typeName) && _outputQueue[typeName].TryDequeue(out JobOutput line))
             {
                 try
                 {
@@ -399,6 +446,13 @@ namespace Agent.Sdk
                         errors.Add(ex.ToString());
                     }
                 }
+            }
+
+            // print out the plugin has been short circuited.
+            if (_shortCircuited.Contains(typeName))
+            {
+                context.Output($"Plugin '{plugin.FriendlyName}' has been short circuited due to exceed memory usage limit.");
+                _outputQueue[typeName].Clear();
             }
 
             // print out error to user.

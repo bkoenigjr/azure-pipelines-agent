@@ -58,7 +58,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             ArgUtil.NotNull(message, nameof(message));
 
             // create a new timeline record node for 'Initialize job'
-            IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("InitializeJob"), nameof(JobExtension), outputForward: false);
+            IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("InitializeJob"), nameof(JobExtension));
 
             JobInitializeResult initResult = new JobInitializeResult();
             using (var register = jobContext.CancellationToken.Register(() => { context.CancelToken(); }))
@@ -121,7 +121,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
                         Trace.Verbose($"Adding agent init script step.");
                         prepareStep.Initialize(HostContext);
-                        prepareStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), prepareStep.DisplayName, nameof(ManagementScriptStep), outputForward: false);
+                        prepareStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), prepareStep.DisplayName, nameof(ManagementScriptStep));
                         prepareStep.AccessToken = systemConnection.Authorization.Parameters["AccessToken"];
                         prepareStep.Condition = ExpressionManager.Succeeded;
                         initResult.PreJobSteps.Add(prepareStep);
@@ -216,13 +216,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                             JobExtensionRunner extensionStep = step as JobExtensionRunner;
                             ArgUtil.NotNull(extensionStep, extensionStep.DisplayName);
                             Guid stepId = Guid.NewGuid();
-                            extensionStep.ExecutionContext = jobContext.CreateChild(stepId, extensionStep.DisplayName, stepId.ToString("N"), outputForward: false);
+                            extensionStep.ExecutionContext = jobContext.CreateChild(stepId, extensionStep.DisplayName, stepId.ToString("N"));
                         }
                         else if (step is ITaskRunner)
                         {
                             ITaskRunner taskStep = step as ITaskRunner;
                             ArgUtil.NotNull(taskStep, step.DisplayName);
-                            taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PreJob", taskStep.DisplayName), taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id]);
+                            taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PreJob", taskStep.DisplayName), taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id], outputForward: true);
                         }
                     }
 
@@ -231,7 +231,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     {
                         ITaskRunner taskStep = step as ITaskRunner;
                         ArgUtil.NotNull(taskStep, step.DisplayName);
-                        taskStep.ExecutionContext = jobContext.CreateChild(taskStep.Task.Id, taskStep.DisplayName, taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id]);
+                        taskStep.ExecutionContext = jobContext.CreateChild(taskStep.Task.Id, taskStep.DisplayName, taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id], outputForward: true);
                     }
 
                     // Add post-job steps from Tasks
@@ -249,13 +249,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                             JobExtensionRunner extensionStep = step as JobExtensionRunner;
                             ArgUtil.NotNull(extensionStep, extensionStep.DisplayName);
                             Guid stepId = Guid.NewGuid();
-                            extensionStep.ExecutionContext = jobContext.CreateChild(stepId, extensionStep.DisplayName, stepId.ToString("N"), outputForward: false);
+                            extensionStep.ExecutionContext = jobContext.CreateChild(stepId, extensionStep.DisplayName, stepId.ToString("N"));
                         }
                         else if (step is ITaskRunner)
                         {
                             ITaskRunner taskStep = step as ITaskRunner;
                             ArgUtil.NotNull(taskStep, step.DisplayName);
-                            taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PostJob", taskStep.DisplayName), taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id]);
+                            taskStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("PostJob", taskStep.DisplayName), taskStep.Task.Name, taskVariablesMapping[taskStep.Task.Id], outputForward: true);
                         }
                     }
 
@@ -272,7 +272,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
                         Trace.Verbose($"Adding agent cleanup script step.");
                         finallyStep.Initialize(HostContext);
-                        finallyStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), finallyStep.DisplayName, nameof(ManagementScriptStep), outputForward: false);
+                        finallyStep.ExecutionContext = jobContext.CreateChild(Guid.NewGuid(), finallyStep.DisplayName, nameof(ManagementScriptStep));
                         finallyStep.Condition = ExpressionManager.Always;
                         finallyStep.AccessToken = systemConnection.Authorization.Parameters["AccessToken"];
                         initResult.PostJobStep.Add(finallyStep);
@@ -319,8 +319,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             ArgUtil.NotNull(jobContext, nameof(jobContext));
 
             // create a new timeline record node for 'Finalize job'
-            IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("FinalizeJob"), nameof(JobExtension), outputForward: false);
-
+            IExecutionContext context = jobContext.CreateChild(Guid.NewGuid(), StringUtil.Loc("FinalizeJob"), nameof(JobExtension));
             using (var register = jobContext.CancellationToken.Register(() => { context.CancelToken(); }))
             {
                 try
@@ -328,9 +327,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     context.Start();
                     context.Section(StringUtil.Loc("StepStarting", StringUtil.Loc("FinalizeJob")));
 
-                    // Stop agent plugin daemon process
-                    var pluginDaemon = HostContext.GetService<IAgentLogPlugin>();
-                    await pluginDaemon.WaitAsync(context);
+                    // Stop agent log plugin process
+                    var logPlugin = HostContext.GetService<IAgentLogPlugin>();
+                    await logPlugin.WaitAsync(context);
                 }
                 catch (Exception ex)
                 {

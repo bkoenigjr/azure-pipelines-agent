@@ -55,10 +55,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             // Agent.PluginHost's arguments
             string arguments = $"log \"{_instanceId.ToString("D")}\"";
-            foreach (var plugin in _logPlugins)
-            {
-                arguments = $"{arguments} \"{plugin.Key}\"";
-            }
 
             var processInvoker = HostContext.CreateService<IProcessInvoker>();
 
@@ -90,11 +86,15 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // construct plugin context
             AgentLogPluginHostContext pluginContext = new AgentLogPluginHostContext
             {
+                PluginAssemblies = new List<string>(),
                 Repositories = jobContext.Repositories,
                 Endpoints = jobContext.Endpoints,
                 Variables = new Dictionary<string, VariableValue>(),
                 Steps = new Dictionary<Guid, Pipelines.TaskStepDefinitionReference>()
             };
+
+            // plugins 
+            pluginContext.PluginAssemblies.AddRange(_logPlugins.Keys);
 
             // variables
             foreach (var publicVar in jobContext.Variables.Public)
