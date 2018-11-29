@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
+using Microsoft.TeamFoundation.Framework.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent
 {
@@ -57,19 +58,7 @@ namespace Microsoft.VisualStudio.Services.Agent
             bool requireExitCodeZero,
             Encoding outputEncoding,
             bool killProcessOnCancel,
-            IList<string> contentsToStandardIn,
-            CancellationToken cancellationToken);
-
-        Task<int> ExecuteAsync(
-            string workingDirectory,
-            string fileName,
-            string arguments,
-            IDictionary<string, string> environment,
-            bool requireExitCodeZero,
-            Encoding outputEncoding,
-            bool killProcessOnCancel,
-            IList<string> contentsToStandardIn,
-            ConcurrentQueue<string> standardIn,
+            InputQueue<string> redirectStandardIn,
             CancellationToken cancellationToken);
     }
 
@@ -144,7 +133,6 @@ namespace Microsoft.VisualStudio.Services.Agent
                 requireExitCodeZero: requireExitCodeZero,
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: false,
-                contentsToStandardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -166,32 +154,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 requireExitCodeZero: requireExitCodeZero,
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: killProcessOnCancel,
-                contentsToStandardIn: null,
-                cancellationToken: cancellationToken);
-        }
-
-
-        public Task<int> ExecuteAsync(
-            string workingDirectory,
-            string fileName,
-            string arguments,
-            IDictionary<string, string> environment,
-            bool requireExitCodeZero,
-            Encoding outputEncoding,
-            bool killProcessOnCancel,
-            IList<string> contentsToStandardIn,
-            CancellationToken cancellationToken)
-        {
-            return ExecuteAsync(
-                workingDirectory: workingDirectory,
-                fileName: fileName,
-                arguments: arguments,
-                environment: environment,
-                requireExitCodeZero: requireExitCodeZero,
-                outputEncoding: outputEncoding,
-                killProcessOnCancel: killProcessOnCancel,
-                contentsToStandardIn: contentsToStandardIn,
-                standardIn: null,
+                redirectStandardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -203,8 +166,7 @@ namespace Microsoft.VisualStudio.Services.Agent
             bool requireExitCodeZero,
             Encoding outputEncoding,
             bool killProcessOnCancel,
-            IList<string> contentsToStandardIn,
-            ConcurrentQueue<string> standardIn,
+            InputQueue<string> redirectStandardIn,
             CancellationToken cancellationToken)
         {
             _invoker.ErrorDataReceived += this.ErrorDataReceived;
@@ -217,8 +179,7 @@ namespace Microsoft.VisualStudio.Services.Agent
                 requireExitCodeZero,
                 outputEncoding,
                 killProcessOnCancel,
-                contentsToStandardIn,
-                standardIn,
+                redirectStandardIn,
                 cancellationToken);
         }
 

@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using System.Text;
 using System.Collections.Concurrent;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
+using Microsoft.TeamFoundation.Framework.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -30,7 +31,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
         private Task<int> _pluginHostProcess = null;
 
-        private readonly ConcurrentQueue<string> _redirectedStdin = new ConcurrentQueue<string>();
+        private readonly InputQueue<string> _redirectedStdin = new InputQueue<string>();
 
         private readonly ConcurrentQueue<string> _outputs = new ConcurrentQueue<string>();
 
@@ -83,8 +84,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                                                          requireExitCodeZero: true,
                                                          outputEncoding: Encoding.UTF8,
                                                          killProcessOnCancel: true,
-                                                         contentsToStandardIn: null,
-                                                         standardIn: _redirectedStdin,
+                                                         redirectStandardIn: _redirectedStdin,
                                                          cancellationToken: jobContext.CancellationToken);
 
             // construct plugin context

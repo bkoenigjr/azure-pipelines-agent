@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Agent.Sdk;
+using Microsoft.TeamFoundation.Framework.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Util
 {
@@ -116,8 +117,6 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 requireExitCodeZero: requireExitCodeZero,
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: false,
-                contentsToStandardIn: null,
-                standardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -139,8 +138,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 requireExitCodeZero: requireExitCodeZero,
                 outputEncoding: outputEncoding,
                 killProcessOnCancel: killProcessOnCancel,
-                contentsToStandardIn: null,
-                standardIn: null,
+                redirectStandardIn: null,
                 cancellationToken: cancellationToken);
         }
 
@@ -152,8 +150,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             bool requireExitCodeZero,
             Encoding outputEncoding,
             bool killProcessOnCancel,
-            IList<string> contentsToStandardIn,
-            ConcurrentQueue<string> standardIn,
+            InputQueue<string> redirectStandardIn,
             CancellationToken cancellationToken)
         {
             ArgUtil.Null(_proc, nameof(_proc));
@@ -166,8 +163,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             Trace.Info($"  Require exit code zero: '{requireExitCodeZero}'");
             Trace.Info($"  Encoding web name: {outputEncoding?.WebName} ; code page: '{outputEncoding?.CodePage}'");
             Trace.Info($"  Force kill process on cancellation: '{killProcessOnCancel}'");
-            Trace.Info($"  Lines to send through STDIN: '{contentsToStandardIn?.Count ?? 0}'");
-            Trace.Info($"  Redirected STDIN: '{standardIn != null}'");
+            Trace.Info($"  Redirected STDIN: '{redirectStandardIn != null}'");
 
             _proc = new Process();
             _proc.StartInfo.FileName = fileName;
@@ -242,23 +238,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
                 // Write the contents as UTF8 to handle all characters.
                 var utf8Writer = new StreamWriter(_proc.StandardInput.BaseStream, new UTF8Encoding(false));
 
-                if (standardIn != null)
+                if (redirectStandardIn != null)
                 {
-                    StartWriteStream(standardIn, utf8Writer);
+                    StartWriteStream(redirectStandardIn, _proc.StandardInput);
                 }
                 else
                 {
-                    // Write contents to STDIN
-                    if (contentsToStandardIn?.Count > 0)
-                    {
-                        foreach (var content in contentsToStandardIn)
-                        {
-
-                            utf8Writer.WriteLine(content);
-                            utf8Writer.Flush();
-                        }
-                    }
-
                     // Close the input stream. This is done to prevent commands from blocking the build waiting for input from the user.
                     _proc.StandardInput.Close();
                 }
@@ -449,21 +434,20 @@ namespace Microsoft.VisualStudio.Services.Agent.Util
             });
         }
 
-        private void StartWriteStream(ConcurrentQueue<string> standardIn, StreamWriter writer)
+        private void StartWriteStream(InputQueue<string> redirectStandardIn, StreamWriter standardIn)
         {
+            // Write the contents as UTF8 to handle all characters.
+            var utf8Writer = new StreamWriter(standardIn.BaseStream, new UTF8Encoding(false));
+
             Task.Run(async () =>
             {
                 while (!_processExitedCompletionSource.Task.IsCompleted)
                 {
-                    if (standardIn.TryDequeue(out string line) && !string.IsNullOrEmpty(line))
+                    string input = await redirectStandardIn.DequeueAsync();
+                    if (!string.IsNullOrEmpty(input))
                     {
-                        Trace.Info(line);
-                        writer.WriteLine(line);
-                        writer.Flush();
-                    }
-                    else
-                    {
-                        await Task.Delay(1000);
+                        utf8Writer.WriteLine(input);
+                        utf8Writer.Flush();
                     }
                 }
 

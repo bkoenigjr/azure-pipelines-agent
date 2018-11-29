@@ -5,6 +5,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.TeamFoundation.DistributedTask.WebApi;
+using Microsoft.TeamFoundation.Framework.Common;
 using Microsoft.VisualStudio.Services.Agent.Util;
 using Microsoft.VisualStudio.Services.Agent.Worker.Container;
 using Microsoft.VisualStudio.Services.WebApi;
@@ -172,6 +173,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                 outputEncoding = null;
 #endif
 
+                var redirectStandardIn = new InputQueue<string>();
+                redirectStandardIn.Enqueue(JsonUtility.ToString(payload));
+
                 return await processInvoker.ExecuteAsync(workingDirectory: HostContext.GetDirectory(WellKnownDirectory.Work),
                                                          fileName: containerEnginePath,
                                                          arguments: containerExecutionArgs,
@@ -179,7 +183,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Handlers
                                                          requireExitCodeZero: requireExitCodeZero,
                                                          outputEncoding: outputEncoding,
                                                          killProcessOnCancel: killProcessOnCancel,
-                                                         contentsToStandardIn: new List<string>() { JsonUtility.ToString(payload) },
+                                                         redirectStandardIn: redirectStandardIn,
                                                          cancellationToken: cancellationToken);
             }
         }

@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using System.Text;
 using System.Collections.Concurrent;
 using Pipelines = Microsoft.TeamFoundation.DistributedTask.Pipelines;
+using Microsoft.TeamFoundation.Framework.Common;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -193,6 +194,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             using (var processInvoker = HostContext.CreateService<IProcessInvoker>())
             {
+                var redirectStandardIn = new InputQueue<string>();
+                redirectStandardIn.Enqueue(JsonUtility.ToString(pluginContext));
+
                 processInvoker.OutputDataReceived += outputHandler;
                 processInvoker.ErrorDataReceived += outputHandler;
 
@@ -206,7 +210,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                                                   requireExitCodeZero: true,
                                                   outputEncoding: Encoding.UTF8,
                                                   killProcessOnCancel: false,
-                                                  contentsToStandardIn: new List<string>() { JsonUtility.ToString(pluginContext) },
+                                                  redirectStandardIn: redirectStandardIn,
                                                   cancellationToken: context.CancellationToken);
             }
         }
@@ -280,6 +284,9 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                     };
                 };
 
+                var redirectStandardIn = new InputQueue<string>();
+                redirectStandardIn.Enqueue(JsonUtility.ToString(pluginContext));
+
                 int returnCode = await processInvoker.ExecuteAsync(workingDirectory: workingDirectory,
                                                                    fileName: file,
                                                                    arguments: arguments,
@@ -287,7 +294,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                                                                    requireExitCodeZero: false,
                                                                    outputEncoding: null,
                                                                    killProcessOnCancel: false,
-                                                                   contentsToStandardIn: new List<string>() { JsonUtility.ToString(pluginContext) },
+                                                                   redirectStandardIn: redirectStandardIn,
                                                                    cancellationToken: token);
 
                 if (returnCode != 0)

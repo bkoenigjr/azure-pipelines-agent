@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.TeamFoundation.Framework.Common;
 using Microsoft.VisualStudio.Services.Agent.Util;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
@@ -233,6 +234,15 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
                 context.Output(message.Data);
             };
 
+            var redirectStandardIn = new InputQueue<string>();
+            if (standardIns != null)
+            {
+                foreach (var input in standardIns)
+                {
+                    redirectStandardIn.Enqueue(input);
+                }
+            }
+
             return await processInvoker.ExecuteAsync(
                 workingDirectory: HostContext.GetDirectory(WellKnownDirectory.Work),
                 fileName: DockerPath,
@@ -241,7 +251,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker.Container
                 requireExitCodeZero: false,
                 outputEncoding: null,
                 killProcessOnCancel: false,
-                contentsToStandardIn: standardIns,
+                redirectStandardIn: redirectStandardIn,
                 cancellationToken: cancellationToken);
         }
 
